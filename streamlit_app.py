@@ -57,7 +57,7 @@ st.markdown("CSV dosyanızı yükleyin, rastgele 5 test case detaylı ve açıkl
 uploaded_file = st.file_uploader("CSV Dosyasını Yükle", type="csv")
 
 if uploaded_file:
-    df = pd.read_csv(uploaded_file, sep=";|,", engine="python")
+    df = pd.read_csv(uploaded_file, sep=";", engine="python")
     if df.shape[0] < 5:
         st.error("En az 5 test case içeren bir CSV yükleyin.")
     else:
