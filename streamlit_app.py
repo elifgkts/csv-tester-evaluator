@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import random
 
 # Streamlit sayfa ayarları
 st.set_page_config(page_title="CSV Test Senaryosu Değerlendirme Aracı", layout="wide")
@@ -60,9 +59,16 @@ st.markdown("CSV dosyanızı yükleyin ve rastgele 5 test senaryosunun otomatik 
 uploaded_file = st.file_uploader("CSV Dosyasını Yükleyin", type="csv")
 
 if uploaded_file:
+    # Dosya okuma işlemi
+    df = None
     try:
-        # CSV dosyasını okuyun. Olası format hataları için virgül ve noktalı virgülü ayırıcı olarak deneyin.
-        df = pd.read_csv(uploaded_file, sep="[,;]", engine="python")
+        # Virgül (,) veya noktalı virgül (;) ayırıcısını deneyerek dosyayı okuyun
+        df = pd.read_csv(uploaded_file, sep="[,;]", engine="python", on_bad_lines='skip')
+    except Exception as e:
+        st.error(f"Dosyayı okurken bir hata oluştu: {e}")
+        st.info("Lütfen dosyanın doğru bir CSV formatında olduğundan ve virgül (,) veya noktalı virgül (;) ile ayrıldığından emin olun.")
+
+    if df is not None:
         if df.shape[0] < 5:
             st.error("Lütfen en az 5 test senaryosu içeren bir CSV dosyası yükleyin.")
         else:
@@ -121,6 +127,3 @@ if uploaded_file:
                 with cols[1]:
                     st.markdown(f"### 🔥 Toplam Puan: **{total_score} / {sum(p[1] for p in kriterler)}**")
                 st.markdown("---")
-
-    except pd.errors.ParserError:
-        st.error("CSV dosyasını okurken bir hata oluştu. Lütfen dosyanın virgül (,) veya noktalı virgül (;) ile ayrıldığından emin olun.")
