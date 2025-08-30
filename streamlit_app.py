@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import random
 
 # Streamlit sayfa ayarları
 st.set_page_config(page_title="CSV Test Senaryosu Değerlendirme Aracı", layout="wide")
@@ -62,7 +63,8 @@ if uploaded_file:
     # Dosya okuma işlemi
     df = None
     try:
-        # Virgül (,) veya noktalı virgül (;) ayırıcısını deneyerek dosyayı okuyun
+        # Virgül (,) veya noktalı virgül (;) ayırıcısını deneyerek dosyayı okuyun.
+        # on_bad_lines='skip' ile hatalı satırları atlayarak daha kararlı hale getirin.
         df = pd.read_csv(uploaded_file, sep="[,;]", engine="python", on_bad_lines='skip')
     except Exception as e:
         st.error(f"Dosyayı okurken bir hata oluştu: {e}")
