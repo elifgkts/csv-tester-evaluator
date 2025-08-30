@@ -61,6 +61,7 @@ uploaded_file = st.file_uploader("CSV Dosyasını Yükleyin", type="csv")
 
 if uploaded_file:
     try:
+        # CSV dosyasını okuyun. Olası format hataları için virgül ve noktalı virgülü ayırıcı olarak deneyin.
         df = pd.read_csv(uploaded_file, sep="[,;]", engine="python")
         if df.shape[0] < 5:
             st.error("Lütfen en az 5 test senaryosu içeren bir CSV dosyası yükleyin.")
