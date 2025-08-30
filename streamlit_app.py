@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import random
@@ -16,38 +15,39 @@ def determine_table(precondition, test_data):
         return "A"
 
 points = {
-    "A": [("Test başlığı anlaşılır mı?", 20),
-          ("Öncelik bilgisi girilmiş mi?", 20),
-          ("Test stepleri var ve doğru ayrıştırılmış mı?", 20),
-          ("Senaryonun hangi clientta koşulcağı belli mi?", 20),
-          ("Expected result bulunuyor mu?", 20)],
-    "B": [("Test başlığı anlaşılır mı?", 17),
-          ("Öncelik bilgisi girilmiş mi?", 17),
-          ("Test ön koşul eklenmiş mi?", 17),
-          ("Test stepleri var ve doğru ayrıştırılmış mı?", 17),
-          ("Senaryonun hangi clientta koşulcağı belli mi?", 17),
-          ("Expected result bulunuyor mu?", 17)],
-    "C": [("Test başlığı anlaşılır mı?", 17),
-          ("Öncelik bilgisi girilmiş mi?", 17),
-          ("Test datası eklenmiş mi?", 17),
-          ("Test stepleri var ve doğru ayrıştırılmış mı?", 17),
-          ("Senaryonun hangi clientta koşulcağı belli mi?", 17),
-          ("Expected result bulunuyor mu?", 17)],
-    "D": [("Test başlığı anlaşılır mı?", 14),
-          ("Öncelik bilgisi girilmiş mi?", 14),
-          ("Test datası eklenmiş mi?", 14),
-          ("Test ön koşul eklenmiş mi?", 14),
-          ("Test stepleri var ve doğru ayrıştırılmış mı?", 14),
-          ("Senaryonun hangi clientta koşulcağı belli mi?", 14)]
+    "A": ["Summary", "Priority", "Steps", "Client", "Expected Result"],
+    "B": ["Summary", "Priority", "Precondition", "Steps", "Client", "Expected Result"],
+    "C": ["Summary", "Priority", "Test Data", "Steps", "Client", "Expected Result"],
+    "D": ["Summary", "Priority", "Test Data", "Precondition", "Steps", "Client"]
 }
 
+point_values = {"A": 20, "B": 17, "C": 17, "D": 14}
+
+def check_criterion(criterion, row_text):
+    row_text = row_text.lower()
+    if criterion == "Summary":
+        return bool(row_text.strip())
+    if criterion == "Priority":
+        return bool(row_text.strip())
+    if criterion == "Steps":
+        return any(key in row_text for key in ["1.", "2.", "step", "adım"])
+    if criterion == "Expected Result":
+        return "beklenen" in row_text
+    if criterion == "Client":
+        return any(k in row_text for k in ["ios", "android", "web"])
+    if criterion == "Precondition":
+        return "ön koşul" in row_text
+    if criterion == "Test Data":
+        return "test data" in row_text or "veri" in row_text
+    return False
+
 st.title("📋 Test Case Değerlendirme Uygulaması (CSV)")
-st.markdown("CSV dosyanızı yükleyin, rastgele 5 test case otomatik olarak puanlansın.")
+st.markdown("CSV dosyanızı yükleyin, rastgele 5 test case otomatik olarak değerlendirilip açıklamalı şekilde puanlansın.")
 
 uploaded_file = st.file_uploader("CSV Dosyasını Yükle", type="csv")
 
 if uploaded_file:
-    df = pd.read_csv(uploaded_file, sep=";")
+    df = pd.read_csv(uploaded_file, sep=None, engine="python")
     if df.shape[0] < 5:
         st.error("En az 5 test case içeren bir CSV yükleyin.")
     else:
@@ -55,47 +55,52 @@ if uploaded_file:
         st.subheader("📊 Örnek 5 Test Case Değerlendirmesi")
 
         for idx, row in sampled.iterrows():
-            st.markdown(f"### 🎯 Test Case {idx + 1}")
             summary = str(row.get("Summary", ""))
             priority = str(row.get("Priority", ""))
             attachments = str(row.get("Attachments", ""))
 
             has_precondition = "ön koşul" in attachments.lower()
             has_data = "test data" in attachments.lower()
-
             table_type = determine_table(has_precondition, has_data)
+
             kriterler = points[table_type]
+            puan_basi = point_values[table_type]
+            max_score = len(kriterler) * puan_basi
             total_score = 0
+            detaylar = []
 
-            cols = st.columns([4, 1])
-            with cols[0]:
-                st.markdown(f"**Tablo Türü:** {table_type}")
-                st.markdown(f"**Summary:** {summary}")
-                st.markdown(f"**Priority:** {priority}")
-            with cols[1]:
-                st.markdown("#### Puanlar")
+            st.markdown(f"### ✅ {idx + 1}. {row.get('Issue key', f'Case {idx+1}')}\n- Tablo: {table_type} ({'Test datası var' if has_data else 'yok'}, {'önkoşul var' if has_precondition else 'önkoşul yok'})")
 
-            for kriter, max_puan in kriterler:
-                puan = max_puan
-                if "başlığı" in kriter and not summary.strip():
-                    puan = 0
-                elif "öncelik" in kriter and not priority.strip():
-                    puan = 0
-                elif "ön koşul" in kriter and not has_precondition:
-                    puan = 0
-                elif "test datası" in kriter and not has_data:
-                    puan = 0
-                elif "stepleri" in kriter and not any(word in attachments.lower() for word in ["1.", "2.", "step", "adım"]):
-                    puan = 0
-                elif "expected" in kriter and "beklenen" not in attachments.lower():
-                    puan = 0
-                elif "client" in kriter and not any(x in attachments.lower() for x in ["ios", "android", "web"]):
-                    puan = 0
+            for kriter in kriterler:
+                ilgili_text = summary + " " + priority + " " + attachments
+                mevcut = check_criterion(kriter, ilgili_text)
 
-                total_score += puan
-                with cols[1]:
-                    st.write(f"{kriter}: {puan}/{max_puan}")
+                if mevcut:
+                    total_score += puan_basi
+                    detaylar.append(f"- {kriter} ✅")
+                else:
+                    if kriter == "Precondition" and table_type == "C":
+                        detaylar.append(f"- {kriter} ❌ (gerekli değil çünkü C tablosu)")
+                    else:
+                        detaylar.append(f"- {kriter} ❌")
 
-            with cols[1]:
-                st.markdown(f"### 🔥 Toplam Puan: **{total_score} / {sum(p[1] for p in kriterler)}**")
+            st.markdown(f"**Puan: {total_score} / {max_score}**")
+            st.markdown("**Kriterler:**\n" + "\n".join(detaylar))
+
+            aciklama = []
+            if not has_precondition and "Precondition" in kriterler and table_type != "C":
+                aciklama.append("Ön koşul eksik.")
+            if not has_data and "Test Data" in kriterler:
+                aciklama.append("Test datası eksik veya yeterince açık değil.")
+            if not check_criterion("Steps", attachments):
+                aciklama.append("Adımlar düzgün ayrılmamış olabilir.")
+            if not check_criterion("Expected Result", attachments):
+                aciklama.append("Beklenen sonuç belirtilmemiş.")
+            if not check_criterion("Client", attachments):
+                aciklama.append("Hangi clientta koşulacağı belirsiz.")
+
+            if aciklama:
+                st.markdown(f"**Açıklama:** {' '.join(aciklama)}")
+            else:
+                st.markdown("**Açıklama:** Tüm kriterler tabloya uygun şekilde sağlanıyor.")
             st.markdown("---")
