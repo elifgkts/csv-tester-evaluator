@@ -1,113 +1,143 @@
 import streamlit as st
 import pandas as pd
-import re
+import random
+import ast
 
-# Başlık
-st.set_page_config(page_title="Test Case Değerlendirme", layout="wide")
-st.title("📊 Test Case Kalite Değerlendirme")
+# ———— Yardımcı Fonksiyonlar ————
 
-# Dosya yükleme
-uploaded_file = st.file_uploader("CSV dosyasını yükleyin", type=["csv"])
+def tablo_tipi_belirle(row):
+    precond = pd.notna(row['Custom field (Tests association with a Pre-Condition)'])
+    steps_raw = row['Custom field (Manual Test Steps)']
+    test_data = 'Data:' in steps_raw if isinstance(steps_raw, str) else False
 
-# Test case tablo kuralları
-tablo_kriterleri = {
-    "A": {"kriterler": ["Summary", "Steps", "Expected Result", "Precondition", "Test Data"], "puan": 20},
-    "B": {"kriterler": ["Summary", "Steps", "Expected Result", "Precondition", "Test Data"], "puan": 17},
-    "C": {"kriterler": ["Summary", "Steps", "Expected Result", "Precondition", "Test Data"], "puan": 17},
-    "D": {"kriterler": ["Summary", "Steps", "Expected Result", "Precondition", "Test Data"], "puan": 14},
-}
-
-# Tablonun belirlenmesi
-@st.cache_data
-def belirle_tablo(precondition, testdata):
-    if pd.notna(precondition) and pd.notna(testdata):
-        return "D"
-    elif pd.notna(precondition):
-        return "B"
-    elif pd.notna(testdata):
-        return "C"
+    if precond and test_data:
+        return 'D'
+    elif precond:
+        return 'B'
+    elif test_data:
+        return 'C'
     else:
-        return "A"
+        return 'A'
 
-# Adım ayrıştırması
-@st.cache_data
-def adimlari_ayir(text):
-    if pd.isna(text):
-        return []
-    raw_steps = re.split(r"\n|\r", text.strip())
-    steps = [s.strip() for s in raw_steps if s.strip()]
-    return steps
+def puan_tablosu(tablo):
+    if tablo == 'A':
+        return {
+            'Test başlığı anlaşılır mı?': 20,
+            'Öncelik bilgisi girilmiş mi?': 20,
+            'Test stepleri var ve doğru ayrıştırılmış mı?': 20,
+            'Senaryonun hangi clientta koşulcağı belli mi?': 20,
+            'Expected result bulunuyor mu?': 20
+        }
+    elif tablo == 'B':
+        return {
+            'Test başlığı anlaşılır mı?': 17,
+            'Öncelik bilgisi girilmiş mi?': 17,
+            'Test ön koşul eklenmiş mi?': 17,
+            'Test stepleri var ve doğru ayrıştırılmış mı?': 17,
+            'Senaryonun hangi clientta koşulcağı belli mi?': 17,
+            'Expected result bulunuyor mu?': 17
+        }
+    elif tablo == 'C':
+        return {
+            'Test başlığı anlaşılır mı?': 17,
+            'Öncelik bilgisi girilmiş mi?': 17,
+            'Test datası eklenmiş mi?': 17,
+            'Test stepleri var ve doğru ayrıştırılmış mı?': 17,
+            'Senaryonun hangi clientta koşulcağı belli mi?': 17,
+            'Expected result bulunuyor mu?': 17
+        }
+    else:  # D tablosu
+        return {
+            'Test başlığı anlaşılır mı?': 14,
+            'Öncelik bilgisi girilmiş mi?': 14,
+            'Test datası eklenmiş mi?': 14,
+            'Test ön koşul eklenmiş mi?': 14,
+            'Test stepleri var ve doğru ayrıştırılmış mı?': 14,
+            'Senaryonun hangi clientta koşulcağı belli mi?': 14,
+            'Expected result bulunuyor mu?': 14
+        }
+
+def kriter_puani(kriter, tablo, row):
+    steps = row['Custom field (Manual Test Steps)']
+    labels = row.get('Labels', '')
+    summary = str(row.get('Summary', ''))
+    priority = str(row.get('Priority', ''))
+    precond = row['Custom field (Tests association with a Pre-Condition)']
+    puan = puan_tablosu(tablo)[kriter]
+
+    if kriter == 'Test başlığı anlaşılır mı?':
+        if not summary.strip(): return 0, '❌ Başlık boş'
+        elif len(summary.strip()) < 10: return puan - 5, '⚠️ Çok kısa başlık'
+        elif any(word in summary.lower() for word in ['alanına gidilir', 'butonuna tıklanır']): return puan - 3, '⚠️ İfade QA açısından zayıf'
+        else: return puan, '✅ Açıklayıcı'
+
+    if kriter == 'Öncelik bilgisi girilmiş mi?':
+        return (puan, '✅ Var') if priority.strip() else (0, '❌ Eksik')
+
+    if kriter == 'Test datası eklenmiş mi?':
+        return (puan, '✅ Data: var') if 'Data:' in steps else (0, '❌ Eksik')
+
+    if kriter == 'Test ön koşul eklenmiş mi?':
+        return (puan, '✅ Ön koşul girilmiş') if pd.notna(precond) and str(precond).strip() else (0, '❌ Eksik')
+
+    if kriter == 'Test stepleri var ve doğru ayrıştırılmış mı?':
+        try:
+            parsed = ast.literal_eval(steps)
+            if isinstance(parsed, list) and len(parsed) > 1:
+                return puan, '✅ Ayrı adımlar'
+            else:
+                return 0, '❌ Tüm işlemler tek stepte'
+        except:
+            return 0, '❌ Step verisi çözülemedi'
+
+    if kriter == 'Senaryonun hangi clientta koşulcağı belli mi?':
+        if any(word in summary.lower() for word in ['web', 'ios', 'android']):
+            return puan, '✅ Client belirtilmiş'
+        else:
+            return 0, '❌ Client bilgisi eksik'
+
+    if kriter == 'Expected result bulunuyor mu?':
+        try:
+            parsed = ast.literal_eval(steps)
+            expected = parsed[0].get('Expected Result', '') if isinstance(parsed, list) else ''
+            if not expected.strip():
+                return 0, '❌ Boş'
+            elif len(expected.strip()) < 10:
+                return puan - 3, '⚠️ Çok kısa ifade'
+            elif any(phrase in expected.lower() for phrase in ['test edilir', 'kontrol edilir']):
+                return puan - 2, '⚠️ Test tanımı yapılmış, beklenen sonuç değil'
+            else:
+                return puan, '✅ Beklenen sonuç yazılmış'
+        except:
+            return 0, '❌ Expected çözümlenemedi'
+
+    return 0, '❓ Bilinmeyen kriter'
+
+# ———— Streamlit Arayüz ————
+
+st.title('📋 Test Case Değerlendirme Aracı (GPT Destekli)')
+uploaded_file = st.file_uploader("Lütfen test case CSV dosyasını yukleyin (\";\" ile ayrılmış)", type=["csv"])
 
 if uploaded_file:
-    try:
-        df = pd.read_csv(uploaded_file, sep=";", engine="python")
+    df = pd.read_csv(uploaded_file, delimiter=';')
+    rastgele_caseler = df.sample(n=5)
 
-        st.success("Dosya başarıyla yüklendi. İlk 5 test case değerlendiriliyor...")
+    for i, (_, row) in enumerate(rastgele_caseler.iterrows(), 1):
+        tablo = tablo_tipi_belirle(row)
+        kriterler = puan_tablosu(tablo)
 
-        for idx, row in df.head(5).iterrows():
-            key = row.get("Key", f"Case-{idx+1}")
-            summary = row.get("Summary", "Özet bulunamadı")
-            steps_raw = row.get("Test Steps", "")
-            expected = row.get("Expected Result", "")
-            precondition = row.get("Precondition", "")
-            testdata = row.get("Test Data", "")
+        st.subheader(f"🎯 Test Case {i}: {row['Issue key']}")
+        st.markdown(f"**Summary:** {row['Summary']}")
+        st.markdown(f"**Tablo Türü:** `{tablo}`")
 
-            tablo = belirle_tablo(precondition, testdata)
-            kriterler = tablo_kriterleri[tablo]["kriterler"]
-            kriter_puani = tablo_kriterleri[tablo]["puan"]
+        toplam = 0
+        max_toplam = sum(kriterler.values())
 
-            kriter_skor = {}
+        for kriter in kriterler:
+            puan, aciklama = kriter_puani(kriter, tablo, row)
+            toplam += puan
+            durum = "✅" if puan == kriterler[kriter] else ("⚠️" if 0 < puan < kriterler[kriter] else "❌")
+            st.markdown(f"- {durum} **{kriter} ({puan}/{kriterler[kriter]}):** {aciklama}")
 
-            # Summary
-            kriter_skor["Summary"] = pd.notna(summary) and len(summary.strip()) > 3
-
-            # Steps
-            step_list = adimlari_ayir(steps_raw)
-            kriter_skor["Steps"] = len(step_list) >= 2
-
-            # Expected Result
-            kriter_skor["Expected Result"] = pd.notna(expected) and len(expected.strip()) > 3
-
-            # Precondition
-            if tablo in ["B", "D"]:
-                kriter_skor["Precondition"] = pd.notna(precondition) and len(precondition.strip()) > 3
-            else:
-                kriter_skor["Precondition"] = False
-
-            # Test Data
-            if tablo in ["C", "D"]:
-                kriter_skor["Test Data"] = pd.notna(testdata) and len(testdata.strip()) > 3
-            else:
-                kriter_skor["Test Data"] = False
-
-            toplam_skor = sum([kriter_puani if v else 0 for k, v in kriter_skor.items()])
-
-            # Görsel çıktı
-            st.markdown(f"""
-                ✅ **{idx+1}. {key}**  
-                • **Tablo:** {tablo} ("{tablo}" tablosuna göre değerlendirme yapıldı)  
-                • **Puan:** {toplam_skor} / 100  
-                • **Kriterler:**
-            """)
-
-            for kriter, deger in kriter_skor.items():
-                ikon = "✅" if deger else "❌"
-                not_ek = " (gerekli değil çünkü {tablo} tablosu)" if kriter in ["Precondition", "Test Data"] and tablo in ["A", "B", "C"] and not deger else ""
-                st.markdown(f"  - {kriter} {ikon}{not_ek}")
-
-            # Açıklama
-            aciklama = ""
-            if not kriter_skor["Steps"]:
-                aciklama += "Adımlar eksik veya tek bir adımda yazılmış olabilir. "
-            if not kriter_skor["Precondition"] and tablo in ["B", "D"]:
-                aciklama += "Gerekli önkoşul eksik. "
-            if not kriter_skor["Test Data"] and tablo in ["C", "D"]:
-                aciklama += "Gerekli test datası eksik. "
-            if not aciklama:
-                aciklama = f"Tüm kriterler {tablo} tablosuna göre karşılanıyor."
-
-            st.markdown(f"**Açıklama:** {aciklama}")
-            st.markdown("---")
-
-    except Exception as e:
-        st.error(f"❌ Hata oluştu: {e}")
+        st.markdown(f"**🎯 Toplam Puan:** `{toplam} / {max_toplam}`")
+        st.markdown("---")
