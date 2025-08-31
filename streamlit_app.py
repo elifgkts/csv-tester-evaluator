@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v1.8 – UI (KPI/Progress/Sidebar) + Data puanı (etiket veya JSON alanı)
+# 📌 Test Case Evaluator v1.9.1 – Tablo seçimi sadece Summary+Steps sinyallerine göre
 import streamlit as st
 import pandas as pd
 import re
@@ -51,7 +51,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 st.markdown(f"""
 <div class="app-hero">
   <h1>📋 Test Case Kalite Değerlendirmesi</h1>
-  <p>Test caseleri A/B/C/D tablosuna göre senaryo içeriğini analiz ederek puanlar.
+  <p>Tablo (A/B/C/D) sadece <b>Summary + Steps</b> içeriğinden çıkarılır; <b>Data sütunu</b> yalnızca puanlamada kullanılır.
   <span style="opacity:0.8">Rapor zamanı: {datetime.now().strftime('%d.%m.%Y %H:%M')}</span></p>
 </div>
 """, unsafe_allow_html=True)
@@ -60,13 +60,13 @@ with st.expander("📌 Kurallar (özet)"):
     st.markdown("""
 - **CSV ayraç:** `;`  
 - **Gerekli sütunlar:** `Issue key` (veya `Issue Key`), `Summary`, `Priority`, `Labels`, `Custom field (Manual Test Steps)`  
-- **Tablo mantığı (senaryoya göre):** A: Data/Pre yok • B: Pre gerekli • C: Data gerekli • D: Data+Pre gerekli  
+- **Tablo mantığı (summary+steps'e göre):** A: Data/Pre yok • B: Pre gerekli • C: Data gerekli • D: Data+Pre gerekli  
 - **Puanlar:** A=5×20, B=6×17, C=6×17, D=7×14
 """)
 
-# ---------- Sidebar Kontroller ----------
+# ---------- Sidebar ----------
 st.sidebar.header("⚙️ Ayarlar")
-sample_size = st.sidebar.slider("Kaç test case değerlendirilsin?", 1, 100, 5)
+sample_size = st.sidebar.slider("Kaç test case değerlendirilsin?", 1, 100, 8)
 fix_seed = st.sidebar.toggle("🔒 Fix seed (deterministik örnekleme)", value=False)
 if "reroll" not in st.session_state:
     st.session_state.reroll = 0
@@ -75,7 +75,7 @@ if st.sidebar.button("🎲 Yeniden örnekle"):
 
 uploaded = st.file_uploader("📤 CSV yükle (`;` ayraçlı)", type="csv")
 
-# ---------- Yardımcılar (mantık) ----------
+# ---------- Yardımcılar ----------
 def _text(x): 
     return str(x or "")
 
@@ -83,40 +83,32 @@ def _match(pattern, text):
     return re.search(pattern, text or "", re.IGNORECASE)
 
 def has_data_tag(steps_text:str) -> bool:
-    # Eski kural: satır başında "Data:" etiketi
+    # Puan için Data etiketi
     return bool(re.search(r'(?:^|\n|\r)\s*[-\s]*Data\s*:', steps_text or "", re.IGNORECASE))
 
 def extract_first(text, key):
-    # JSON benzeri içerikten "Key": "..." yakala
     m = re.search(rf'"{key}"\s*:\s*"(.*?)"', text or "", re.IGNORECASE | re.DOTALL)
     return m.group(1).strip() if m else ""
 
 def has_data_present_for_scoring(steps_text:str) -> bool:
-    """
-    Data kriteri için 'var' kabulü:
-    - "Data:" etiketi VARSA veya
-    - JSON benzeri içerikte "Data": "<boş olmayan>" alanı VARSA
-    - 'none', 'n/a', '-', 'yok' gibi değersiz girdiler hariç tutulur
-    """
+    """Puan için Data varlığı: Data: etiketi veya JSON 'Data' alanı dolu."""
     if has_data_tag(steps_text):
         return True
     matches = re.findall(r'"Data"\s*:\s*"(.*?)"', steps_text or "", re.IGNORECASE | re.DOTALL)
-    meaningless = {"", "-", "—", "none", "n/a", "na", "null", "yok"}
-    for m in matches:
-        val = re.sub(r'\s+', ' ', (m or "")).strip().lower()
-        if val not in meaningless and len(val) > 0:
-            return True
-    return False
+    return any(len((m or "").strip()) > 0 for m in matches)
 
+# --- Sadece summary+steps'ten sinyaller (tablo seçimi için) ---
 def scan_data_signals(text:str):
     t = (text or "").lower()
     signals = []
     if _match(r'\b(select|insert|update|delete)\b', t): signals.append("SQL")
-    if _match(r'\b(json|payload|body|request|response|headers|content-type)\b', t) and _match(r'"\w+"\s*:\s*".+?"', t): signals.append("JSON body")
-    if _match(r'\b(msisdn|token|iban|imei|email|username|password|user[_\-]?id|subscriber)\b', t): signals.append("Kimlik alanı")
+    if _match(r'"\w+"\s*:\s*".+?"', t) and _match(r'\b(json|payload|body|headers|content-type|request|response)\b', t): signals.append("JSON body")
+    if _match(r'\b(msisdn|token|iban|imei|email|username|password|user[_\-]?id|subscriber|isbn)\b', t): signals.append("Kimlik alanı")
     if _match(r'\b(post|put|patch)\b', t) and _match(r'\b(body|payload)\b', t): signals.append("POST payload")
-    if _match(r'<\s*(msisdn|token|iban|imei|email|username|password|user[_\-]?id)\s*>', t) or \
-       _match(r'\{\s*(msisdn|token|iban|imei|email|username|password|user[_\-]?id)\s*\}', t): signals.append("Placeholder(ID)")
+    if _match(r'<\s*(msisdn|token|iban|imei|email|username|password|user[_\-]?id|isbn)\s*>', t) or \
+       _match(r'\{\s*(msisdn|token|iban|imei|email|username|password|user[_\-]?id|isbn)\s*\}', t): signals.append("Placeholder(ID)")
+    if _match(r'https?://', t) and (_match(r'\b(api|endpoint|request|postman)\b', t) or _match(r'[\?\=]', t)):
+        signals.append("API/URL")
     return signals
 
 def scan_precond_signals(text:str):
@@ -129,27 +121,19 @@ def scan_precond_signals(text:str):
     if _match(r'\b(seed|setup|config(ure|)|feature flag|whitelist|allowlist|role|permission)\b', t): signals.append("Ortam/Ayar/Yetki")
     return signals
 
-def decide_data_needed(summary:str, steps_text:str):
-    """
-    Data gerçekten gerekli mi?
-    - 'Data:' etiketi **veya** JSON 'Data' alanı doluysa → doğrudan GEREKLİ.
-    - Aksi halde, güçlü sinyal sayısı ≥ 2 ise GEREKLİ.
-    """
+def decide_data_needed(summary:str, steps_text:str) -> bool:
+    """Sadece summary+steps sinyalleriyle data gereksinimi."""
     combined = (summary or "") + "\n" + (steps_text or "")
-    data_field = extract_first(steps_text, "Data")
-    if has_data_present_for_scoring(steps_text) or (data_field.strip() != ""):
-        return True
-    signals = scan_data_signals(combined)
-    return len(set(signals)) >= 2
+    return len(set(scan_data_signals(combined))) >= 1
 
-def decide_precond_needed(summary:str, steps_text:str):
+def decide_precond_needed(summary:str, steps_text:str) -> bool:
+    """Sadece summary+steps sinyalleriyle ön koşul gereksinimi."""
     combined = (summary or "") + "\n" + (steps_text or "")
-    signals = scan_precond_signals(combined)
-    return len(set(signals)) >= 1
+    return len(set(scan_precond_signals(combined))) >= 1
 
 def choose_table(summary, steps_text):
     data_needed = decide_data_needed(summary, steps_text)
-    pre_needed = decide_precond_needed(summary, steps_text)
+    pre_needed  = decide_precond_needed(summary, steps_text)
     if data_needed and pre_needed:
         return "D", 14, [1,2,3,4,5,6,7]
     if data_needed:
@@ -158,6 +142,7 @@ def choose_table(summary, steps_text):
         return "B", 17, [1,2,4,5,6,7]
     return "A", 20, [1,2,5,6,7]
 
+# ---------- Skorlama ----------
 def score_one(row):
     key = _text(row.get('Issue key') or row.get('Issue Key'))
     summary = _text(row.get('Summary'))
@@ -167,6 +152,7 @@ def score_one(row):
     action = extract_first(steps_text, "Action")
     expected = extract_first(steps_text, "Expected Result")
 
+    # TABLO: sadece summary+steps
     table, base, active = choose_table(summary, steps_text)
 
     pts, notes, total = {}, [], 0
@@ -187,21 +173,21 @@ def score_one(row):
         else:
             pts['Öncelik'] = base; notes.append("✅ Öncelik var"); total += base
 
-    # 3) Data – etiket **veya** JSON 'Data' alanı doluysa puan
+    # 3) Data – sadece PUAN (tabloya etki etmez)
     if 3 in active:
         if has_data_present_for_scoring(steps_text):
-            pts['Data'] = base; notes.append("✅ Data mevcut (etiket/alan)"); total += base
+            pts['Data'] = base; notes.append("✅ Data mevcut (etiket/JSON alanı)"); total += base
         else:
-            pts['Data'] = 0; notes.append("❌ Data bulunamadı")
+            pts['Data'] = 0; notes.append("❌ Data belirtilmemiş")
 
-    # 4) Ön Koşul
+    # 4) Ön Koşul – sadece PUAN (tablo zaten summary+steps'ten seçildi)
     if 4 in active:
         if decide_precond_needed(summary, steps_text):
             pts['Ön Koşul'] = base; notes.append("✅ Ön koşul belirtilmiş/ima edilmiş"); total += base
         else:
             pts['Ön Koşul'] = 0; notes.append("❌ Ön koşul eksik")
 
-    # 5) Stepler – kırıntı mantığı
+    # 5) Stepler
     if 5 in active:
         if not action.strip():
             pts['Stepler'] = 0; notes.append("❌ Stepler boş")
@@ -231,7 +217,7 @@ def score_one(row):
     return {
         "Key": key,
         "Summary": summary,
-        "Tablo": table,
+        "Tablo": table,          # <— sadece summary+steps'e göre
         "Toplam Puan": total,
         **pts,
         "Açıklama": " | ".join(notes),
@@ -257,7 +243,7 @@ if uploaded:
 
     results = sample.apply(score_one, axis=1, result_type='expand')
 
-    # ---------- KPI Özetleri ----------
+    # KPI
     total_cases = len(results)
     avg_score = round(results["Toplam Puan"].mean() if total_cases else 0, 1)
     min_score = int(results["Toplam Puan"].min()) if total_cases else 0
@@ -277,7 +263,7 @@ if uploaded:
     st.markdown("### 📈 Tablo Dağılımı")
     st.bar_chart(dist)
 
-    # ---------- Skor yüzdesi + tablo ----------
+    # Skor %
     MAX_BY_TABLE = {"A": 100, "B": 102, "C": 102, "D": 98}
     results["Maks Puan"] = results["Tablo"].map(MAX_BY_TABLE).fillna(100)
     results["Skor %"] = (results["Toplam Puan"] / results["Maks Puan"]).clip(0,1) * 100
@@ -307,7 +293,7 @@ if uploaded:
         mime="text/csv"
     )
 
-    # ---------- Detay Kartları ----------
+    # Detay kartları
     st.markdown("## 📝 Detaylar")
     for _, r in results.iterrows():
         max_pt = MAX_BY_TABLE.get(r["Tablo"], 100)
@@ -331,8 +317,7 @@ if uploaded:
 
         st.markdown("<hr class='hr-soft'/>", unsafe_allow_html=True)
 
-        kriterler = ['Başlık','Öncelik','Data','Ön Koşul','Stepler','Client','Expected']
-        for k in kriterler:
+        for k in ['Başlık','Öncelik','Data','Ön Koşul','Stepler','Client','Expected']:
             if k in r and pd.notna(r[k]):
                 st.markdown(f"- **{k}**: {int(r[k])} puan")
         st.markdown(f"🗒️ **Açıklamalar:** {r['Açıklama']}")
