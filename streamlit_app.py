@@ -14,7 +14,7 @@ Her test case'in ait olduğu tablo, **senaryo içeriğine göre otomatik belirle
 # 📌 Kurallar ve Tablo Yapısı
 with st.expander("📌 Değerlendirme Kuralları ve Tablo Açıklamaları"):
     st.markdown("""
-**CSV formatı:** CSV dosyası `;` (noktalı virgül) ile ayrılmalıdır.
+**CSV formatı:** JIRA'dan export edilen XRAY CSV dosyası `;` (noktalı virgül) ile ayrılmalıdır.
 
 **Gerekli sütunlar:** `Issue Key`, `Summary`, `Priority`, `Labels`, `Custom field (Manual Test Steps)`
 
