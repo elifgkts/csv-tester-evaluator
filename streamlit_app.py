@@ -54,7 +54,7 @@ if uploaded_file:
     sampled_df = df.sample(n=sample_size, random_state=42)
 
     def score_case(row):
-        key = row['Key']
+        key = row['Issue key']
         summary = str(row['Summary']).strip()
         priority = str(row['Priority']).strip().lower()
         labels = str(row['Labels']).lower()
