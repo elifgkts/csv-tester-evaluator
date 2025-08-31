@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v2.9.4
-# - Tablo (A/B/C/D) içerik analizi ile belirlenir (summary + steps)
-# - İSTİSNA: Case içinde hem Data hem Pre YAZILMIŞSA → doğrudan D
-#   • Data yazılmış: steps içinde anlamlı "Data" bloğu/SQL sinyali
-#   • Pre yazılmış: YALNIZCA CSV’deki İKİ sütundan biri boşluk-harici doluysa
-#     - Custom field (Tests association with a Pre-Condition)
-#     - Custom field (Pre-Conditions association with a Test)
+# 📌 Test Case Evaluator v2.9.5
+# - Tablo (A/B/C/D) İHTİYAÇ analiziyle belirlenir (summary + steps içeriği)
+#   A: Data/Pre gerekmiyor
+#   B: Pre gerekli (CSV dolu olmasa da)
+#   C: Data gerekli (steps’te yazılmasa da)
+#   D: Data + Pre gerekli (CSV/steps yazılmamış olsa da)
+# - EK KURAL: Eğer case’te hem Data (steps’te anlamlı) hem Pre (CSV iki sütundan biri dolu) YAZILMIŞSA → doğrudan D (override).
 # - PUANLAMA:
-#   • Pre-Condition puanı: SADECE bu iki CSV sütunundan birinin doluluğuna göre
+#   • Pre-Condition puanı: SADECE CSV’deki 2 sütundan biri gerçekten doluysa
 #   • Data/Expected puanı: steps’te gerçek/anlamlı varlığa göre
 # - Tek Action bloğunda çok adım/edilgen ifade → Stepler = 1 puan
 # - UI/KPI/Dağılım/Detay kartları/CSV indirme
@@ -75,10 +75,12 @@ with st.expander("📌 Kurallar (özet)"):
     st.markdown("""
 - **CSV ayraç:** `;`  
 - **Gerekli sütunlar:** `Issue key`/`Issue Key`, `Summary`, `Priority`, `Labels`, `Custom field (Manual Test Steps)`  
-- **Tablo mantığı (senaryoya göre, içerik analizi):** A: Data/Pre yok • B: Pre gerekli • C: Data gerekli • D: Data+Pre gerekli  
+- **Tablo mantığı (senaryoya göre, içerik analizi):**  
+  **A**: Data/Pre gerekmiyor • **B**: Pre gerekli • **C**: Data gerekli • **D**: Data+Pre gerekli  
 - **Puanlar:** A=5×20, B=6×17, C=6×17, D=7×14  
 - **Pre-Condition puanı:** **Sadece** şu CSV alanlardan biri **boşluk-harici doluysa** verilir:  
-  `Custom field (Tests association with a Pre-Condition)` **veya** `Custom field (Pre-Conditions association with a Test)`.
+  `Custom field (Tests association with a Pre-Condition)` **veya** `Custom field (Pre-Conditions association with a Test)`.  
+- **D override:** Case’te hem Data (steps’te anlamlı) hem Pre (CSV) yazılıysa → doğrudan D.
 """)
 
 # ---------- Sidebar ----------
@@ -168,7 +170,7 @@ def has_data_present_for_scoring(steps_text: str) -> bool:
     if re.search(r'\b(select|insert|update|delete)\b', steps_text or "", re.I): return True
     return False
 
-# ---- PRECONDITION (YALNIZCA CSV’den, iki sütunun sade doluluk kontrolü) ----
+# ---- PRECONDITION (CSV doluluğu) ----
 PRECOND_EXACT_COLS = [
     "Custom field (Tests association with a Pre-Condition)",
     "Custom field (Pre-Conditions association with a Test)",
@@ -216,17 +218,23 @@ def decide_precond_needed(summary: str, steps_text: str) -> bool:
     combined = (summary or "") + "\n" + (steps_text or "")
     return len(scan_precond_signals(combined)) >= 1
 
-# ---- TABLO KARARI (override + içerik) ----
+# ---- TABLO KARARI (ihtiyaç + override) ----
 def choose_table(summary: str, steps_text: str, *, data_written: bool, pre_written_csv: bool):
-    # OVERRIDE: Hem Data hem Pre CSV doluysa → D
-    if data_written and pre_written_csv:
-        return "D", 14, [1,2,3,4,5,6,7]
-    # İhtiyaç analizi
+    # 1) İHTİYAÇ: içeriğe bakarak karar (CSV doluluğundan BAĞIMSIZ)
     data_needed = decide_data_needed(summary, steps_text)
     pre_needed  = decide_precond_needed(summary, steps_text)
-    if data_needed and pre_needed: return "D", 14, [1,2,3,4,5,6,7]
-    if data_needed:                 return "C", 17, [1,2,3,5,6,7]
-    if pre_needed:                  return "B", 17, [1,2,4,5,6,7]
+
+    # 2) OVERRIDE: hem data YAZILMIŞ (steps) hem pre YAZILMIŞ (CSV) ise → D
+    if data_written and pre_written_csv:
+        return "D", 14, [1,2,3,4,5,6,7]
+
+    # 3) İhtiyaca göre tablo seçimi
+    if data_needed and pre_needed: 
+        return "D", 14, [1,2,3,4,5,6,7]
+    if data_needed:                
+        return "C", 17, [1,2,3,5,6,7]
+    if pre_needed:                 
+        return "B", 17, [1,2,4,5,6,7]
     return "A", 20, [1,2,5,6,7]
 
 # ---- ACTION/STEPLER ----
