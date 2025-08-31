@@ -1,174 +1,150 @@
 import streamlit as st
 import pandas as pd
-import json
 import random
-import re
+import ast
 
 st.set_page_config(page_title="Test Case Değerlendirme", layout="wide")
-st.title("📋 Test Case Kalite Değerlendirme Aracı")
+st.title("📊 Akıllı Test Case Değerlendirici")
 
-# 7 kriter puanları tablolar bazında
-TABLO_PUANLARI = {
-    "A": {"summary": 20, "priority": 20, "steps": 20, "client": 20, "expected": 20},
-    "B": {"summary": 17, "priority": 17, "precondition": 17, "steps": 17, "client": 17, "expected": 17},
-    "C": {"summary": 17, "priority": 17, "testdata": 17, "steps": 17, "client": 17, "expected": 17},
-    "D": {"summary": 14, "priority": 14, "testdata": 14, "precondition": 14, "steps": 14, "client": 14, "expected": 14},
-}
+st.markdown("""
+Bu uygulama, test case değerlendirme kurallarına uygun olarak rastgele 5 test case seçer, A/B/C/D tablolarına göre sınıflandırır ve her kriteri tek tek puanlar.
 
-# NLP destekli tablo belirleyici
-def belirle_tablo(summary, steps_json):
-    summary = summary.lower()
-    steps_text = json.dumps(steps_json).lower()
-    
-    step_texts = [s.get("Action", "").lower() for s in steps_json]
+**Beklenen CSV Formatı:** `;` ile ayrılmış ve aşağıdaki sütunları içermelidir:
+- `Key`
+- `Summary`
+- `Priority`
+- `Labels`
+- `Custom field (Manual Test Steps)`
+- `Custom field (Client)`
+- `Custom field (Tests association with a Pre-Condition)`
 
-    has_data = any(re.search(r"token|msisdn|account|data|payload|auth|config|header|mail|user", t) for t in step_texts)
-    has_precondition = any(re.search(r"giriş yap|login ol|hesap oluştur|öncesinde|hazırlık|setup|bağlan", t) for t in step_texts)
+Lütfen yukarıdaki sütun isimlerinin dosyada birebir aynı şekilde yazıldığından emin olun.
+""")
 
-    if has_data and has_precondition:
-        return "D"
-    elif has_precondition:
-        return "B"
-    elif has_data:
-        return "C"
-    else:
-        return "A"
+uploaded_file = st.file_uploader("CSV dosyanızı yükleyin", type="csv")
 
-# JSON içindeki alanı ayıkla
-def get_field(steps, field):
-    try:
-        if isinstance(steps, str):
-            steps = json.loads(steps)
-        return [step.get(field, "") for step in steps if isinstance(step, dict)]
-    except:
-        return []
+if uploaded_file:
+    df = pd.read_csv(uploaded_file, delimiter=';', encoding='utf-8')
 
-# Kriterlere göre puanlama yap
+    st.success(f"Toplam test case: {len(df)}. Rastgele 5 tanesi aşağıda değerlendirilmiştir.")
 
-def puanla(row):
-    key = row["Issue key"]
-    summary = row["Summary"]
-    priority = row["Priority"]
-    client = row["Custom field (Client Type)"]
-    precond = row["Custom field (Tests association with a Pre-Condition)"]
-    steps_raw = row["Custom field (Manual Test Steps)"]
+    def determine_table(row):
+        manual_steps = row['Custom field (Manual Test Steps)']
+        labels = str(row['Labels']).lower()
+        summary = str(row['Summary']).lower()
 
-    try:
-        steps = json.loads(steps_raw)
-    except:
-        steps = []
+        try:
+            steps = ast.literal_eval(manual_steps)
+        except:
+            steps = []
 
-    tablo = belirle_tablo(summary, steps)
-    puanlar = TABLO_PUANLARI[tablo]
-    total = 0
-    açıklamalar = []
+        data_exists = any('data' in step.get('fields', {}).get('Data', '').lower() for step in steps) or 'data:' in manual_steps.lower()
+        expected_exists = any('expected' in step.get('fields', {}).get('Expected Result', '').lower() for step in steps)
+        precondition_exists = pd.notna(row['Custom field (Tests association with a Pre-Condition)']) and row['Custom field (Tests association with a Pre-Condition)'] != ''
 
-    def kırıntı_puan(puan, oran): return max(1, round(puan * oran))
-
-    # Summary
-    if not summary or summary.strip() == "":
-        p = 0
-        açıklama = "❌ Summary boş"
-    elif re.search(r" gidilir$", summary.strip()):
-        p = kırıntı_puan(puanlar["summary"], 0.75)
-        açıklama = "⚠️ Summary var ama doğru ifade edilmemiş (örn. 'gidilmesi' olmalıydı)"
-    else:
-        p = puanlar["summary"]
-        açıklama = "✅ Anlaşılır summary"
-    total += p
-    açıklamalar.append(f"- Summary ({p}/{puanlar['summary']}): {açıklama}")
-
-    # Priority
-    if priority:
-        p = puanlar["priority"]
-        açıklama = "✅ Priority girilmiş"
-    else:
-        p = 0
-        açıklama = "❌ Priority boş"
-    total += p
-    açıklamalar.append(f"- Öncelik ({p}/{puanlar['priority']}): {açıklama}")
-
-    # Precondition (gerekiyorsa)
-    if "precondition" in puanlar:
-        if precond and precond.strip():
-            p = puanlar["precondition"]
-            açıklama = "✅ Ön koşul belirtilmiş"
+        if precondition_exists and data_exists:
+            return "D"
+        elif precondition_exists:
+            return "B"
+        elif data_exists:
+            return "C"
         else:
-            p = 0
-            açıklama = "❌ Ön koşul eksik"
-        total += p
-        açıklamalar.append(f"- Ön Koşul ({p}/{puanlar['precondition']}): {açıklama}")
+            return "A"
 
-    # Test Data (gerekiyorsa)
-    if "testdata" in puanlar:
-        data_fields = get_field(steps, "Data")
-        if any(d.strip() for d in data_fields):
-            p = puanlar["testdata"]
-            açıklama = "✅ Test datası girilmiş"
+    def score_case(row):
+        table = determine_table(row)
+        score = 0
+        breakdown = []
+
+        def partial_points(criterion, point, reason):
+            return {"criterion": criterion, "points": point, "note": reason}
+
+        def full_points(criterion, point):
+            return {"criterion": criterion, "points": point, "note": "✅ Tam puan"}
+
+        def zero_points(criterion, reason):
+            return {"criterion": criterion, "points": 0, "note": f"❌ {reason}"}
+
+        point = {"A": 20, "B": 17, "C": 17, "D": 14}[table]
+
+        # 1. Summary
+        summary = str(row['Summary'])
+        if not summary.strip():
+            breakdown.append(zero_points("Test başlığı anlaşılır mı?", "Başlık eksik"))
+        elif len(summary) < 10:
+            breakdown.append(partial_points("Test başlığı anlaşılır mı?", point - 5, "Başlık çok kısa"))
+        elif any(w in summary for w in ["gidilir", "yapılır"]):
+            breakdown.append(partial_points("Test başlığı anlaşılır mı?", point - 2, "Dil bilgisi sorunlu (gidilir/yapılır vb.)"))
         else:
-            p = 0
-            açıklama = "❌ Test datası eksik"
-        total += p
-        açıklamalar.append(f"- Test Data ({p}/{puanlar['testdata']}): {açıklama}")
+            breakdown.append(full_points("Test başlığı anlaşılır mı?", point))
 
-    # Steps
-    actions = get_field(steps, "Action")
-    if len(actions) <= 1 or summary.strip().lower() in actions[0].lower():
-        p = 1
-        açıklama = "⚠️ Step alanına summary yazılmış veya tek adımda özetlenmiş"
-    elif all(len(a.strip()) < 5 for a in actions):
-        p = 0
-        açıklama = "❌ Step içerikleri çok kısa"
-    else:
-        p = puanlar["steps"]
-        açıklama = "✅ Step'ler ayrılmış ve anlamlı"
-    total += p
-    açıklamalar.append(f"- Stepler ({p}/{puanlar['steps']}): {açıklama}")
+        # 2. Öncelik
+        if pd.isna(row['Priority']) or row['Priority'] == '':
+            breakdown.append(zero_points("Öncelik bilgisi girilmiş mi?", "Öncelik bilgisi boş"))
+        else:
+            breakdown.append(full_points("Öncelik bilgisi girilmiş mi?", point))
 
-    # Client
-    if client:
-        p = puanlar["client"]
-        açıklama = "✅ Client belirtilmiş"
-    else:
-        p = 0
-        açıklama = "❌ Client eksik"
-    total += p
-    açıklamalar.append(f"- Client ({p}/{puanlar['client']}): {açıklama}")
+        # 3. Test Datası
+        if table in ["C", "D"]:
+            steps = ast.literal_eval(str(row['Custom field (Manual Test Steps)'])) if row['Custom field (Manual Test Steps)'] else []
+            data_exists = any(step.get('fields', {}).get('Data', '').strip() for step in steps)
+            if data_exists:
+                breakdown.append(full_points("Test datası eklenmiş mi?", point))
+            else:
+                breakdown.append(zero_points("Test datası eklenmiş mi?", "Data alanı boş"))
 
-    # Expected Result
-    expecteds = get_field(steps, "Expected Result")
-    if not any(e.strip() for e in expecteds):
-        p = 0
-        açıklama = "❌ Expected result eksik"
-    elif any(re.search(r"test edilir|gözlemlenir|kontrol edilir", e.lower()) for e in expecteds):
-        p = kırıntı_puan(puanlar["expected"], 0.75)
-        açıklama = "⚠️ Expected Result var ama testin ne olduğu gibi yazılmış"
-    else:
-        p = puanlar["expected"]
-        açıklama = "✅ Expected Result açık"
-    total += p
-    açıklamalar.append(f"- Expected Result ({p}/{puanlar['expected']}): {açıklama}")
+        # 4. Önkoşul
+        if table in ["B", "D"]:
+            if pd.isna(row['Custom field (Tests association with a Pre-Condition)']) or row['Custom field (Tests association with a Pre-Condition)'] == '':
+                breakdown.append(zero_points("Test ön koşul eklenmiş mi?", "Ön koşul alanı boş"))
+            else:
+                breakdown.append(full_points("Test ön koşul eklenmiş mi?", point))
 
-    return pd.Series({
-        "Issue Key": key,
-        "Summary": summary,
-        "Tablo": tablo,
-        "Puan": total,
-        "Açıklama": "\n".join(açıklamalar)
-    })
+        # 5. Stepler
+        try:
+            steps = ast.literal_eval(str(row['Custom field (Manual Test Steps)']))
+        except:
+            steps = []
+        if not steps:
+            breakdown.append(zero_points("Test stepleri var ve doğru ayrıştırılmış mı?", "Step yok"))
+        elif len(steps) == 1 and summary.strip().lower() in steps[0].get('fields', {}).get('Action', '').lower():
+            breakdown.append(partial_points("Test stepleri var ve doğru ayrıştırılmış mı?", 1, "Tek stepte summary yazılmış"))
+        else:
+            breakdown.append(full_points("Test stepleri var ve doğru ayrıştırılmış mı?", point))
 
-# Arayüz
-uploaded = st.file_uploader("Test Case CSV dosyasını yükleyin", type=["csv"])
-if uploaded:
-    df = pd.read_csv(uploaded, sep=";")
-    örnekler = df.sample(min(5, len(df)))
-    sonuçlar = örnekler.apply(puanla, axis=1)
+        # 6. Client
+        client = str(row.get("Custom field (Client)", ""))
+        if client.strip():
+            breakdown.append(full_points("Senaryonun hangi clientta koşulacağı belli mi?", point))
+        else:
+            breakdown.append(zero_points("Senaryonun hangi clientta koşulacağı belli mi?", "Client alanı boş"))
 
-    for _, row in sonuçlar.iterrows():
-        with st.expander(f"🔎 {row['Issue Key']} – {row['Summary'][:70]}..."):
-            st.markdown(f"""
-            📌 **Tablo:** {row['Tablo']}  
-            🎯 **Puan:** {row['Puan']} / 100
+        # 7. Expected Result
+        if table in ["A", "B", "C", "D"]:
+            expected_texts = [step.get('fields', {}).get('Expected Result', '') for step in steps]
+            expected_texts = [text for text in expected_texts if text.strip()]
+            if not expected_texts:
+                breakdown.append(zero_points("Expected result bulunuyor mu?", "Hiçbiri dolu değil"))
+            elif any(w in expected_texts[0].lower() for w in ["test edilir", "yapılır", "alanı"]):
+                breakdown.append(partial_points("Expected result bulunuyor mu?", point - 2, "Beklenen sonuç değil, işlem açıklaması var"))
+            else:
+                breakdown.append(full_points("Expected result bulunuyor mu?", point))
 
-            {row['Açıklama']}
-            """)
+        total = sum(item['points'] for item in breakdown)
+        return {
+            "Key": row['Key'],
+            "Summary": row['Summary'],
+            "Tablo": table,
+            "Toplam Puan": total,
+            "Detaylar": breakdown
+        }
+
+    sampled_df = df.sample(5, random_state=42)  # Rastgele ama sabit olsun diye
+    sonuçlar = sampled_df.apply(score_case, axis=1)
+
+    for result in sonuçlar:
+        st.markdown(f"### 🔹 {result['Key']} – {result['Summary']}")
+        st.markdown(f"**🧮 Tablo Türü:** {result['Tablo']} &nbsp;&nbsp;|&nbsp;&nbsp; **Toplam Puan:** `{result['Toplam Puan']}`")
+        for item in result['Detaylar']:
+            st.markdown(f"- **{item['criterion']}** → `{item['points']}` puan – {item['note']}")
+        st.markdown("---")
