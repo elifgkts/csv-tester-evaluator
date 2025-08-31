@@ -1,24 +1,18 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v2.9.2
-# - Tablo (A/B/C/D) içerik analizi ile belirlenir (summary + steps)
-# - İSTİSNA: Case içinde hem Data hem Pre YAZILMIŞSA → doğrudan D
-#   • Data yazılmış: steps içinde anlamlı "Data" bloğu/SQL sinyali
-#   • Pre yazılmış: YALNIZCA CSV’deki iki sütundan biri dolu (aşağıda)
-# - PUANLAMA:
-#   • Pre-Condition puanı: SADECE CSV sütunları ile verilir (steps dikkate alınmaz)
-#     - Custom field (Tests association with a Pre-Condition)
-#     - Custom field (Pre-Conditions association with a Test)
-#   • Data/Expected puanı: steps’te gerçek/anlamlı varlığa göre
-# - Tek Action bloğunda çok adım/edilgen ifade → Stepler = 1 puan
-# - UI/KPI/Dağılım/Detay kartları/CSV indirme
-# - Dosya yükleme: st.file_uploader
+# 📌 Test Case Evaluator v2.9.3
+# - Precondition SADECE şu iki CSV sütunundan anlamlı içerik varsa var sayılır:
+#   • Custom field (Tests association with a Pre-Condition)
+#   • Custom field (Pre-Conditions association with a Test)
+# - Boş/işlevsiz değerler ([], {}, -, none, null, yok, yalnızca noktalama/boşluk) PUAN getirmez.
+# - Tablo tayini: içerik analizi (ihtiyaç) + override (hem data hem pre CSV doluysa → D)
+# - Data/Expected puanlaması steps’te gerçek varlığa göre; Pre yalnız CSV’den.
 
 import streamlit as st
 import pandas as pd
 import re
+import html
 from datetime import datetime
 
-# ---------- Sayfa & Stil ----------
 st.set_page_config(page_title="Test Case SLA", layout="wide")
 
 CUSTOM_CSS = """
@@ -40,7 +34,7 @@ CUSTOM_CSS = """
   }
 }
 #MainMenu, footer {visibility:hidden;}
-.app-hero{background:linear-gradient(135deg,#1f6feb 0%,#0ea5e9 100%);color:#fff;padding:18px 22px;border-radius:14px;margin-bottom:18px;box-shadow:0 8px 24px rgba(2, 6, 23, 0.18)}
+.app-hero{background:linear-gradient(135deg,#1f6feb 0%,#0ea5e9 100%);color:#fff;padding:18px 22px;border-radius:14px;margin-bottom:18px;box-shadow:0 8px 24px rgba(2,6,23,0.18)}
 .app-hero h1{font-size:24px;margin:0 0 6px 0;line-height:1.2;color:#fff}
 .app-hero p{margin:0;opacity:.95;color:#fff}
 .kpi{border-radius:14px;padding:14px;background:var(--bg-card);border:1px solid var(--border);box-shadow:0 4px 16px rgba(2,6,23,0.06)}
@@ -77,7 +71,7 @@ with st.expander("📌 Kurallar (özet)"):
 - **Gerekli sütunlar:** `Issue key`/`Issue Key`, `Summary`, `Priority`, `Labels`, `Custom field (Manual Test Steps)`  
 - **Tablo mantığı (senaryoya göre, içerik analizi):** A: Data/Pre yok • B: Pre gerekli • C: Data gerekli • D: Data+Pre gerekli  
 - **Puanlar:** A=5×20, B=6×17, C=6×17, D=7×14  
-- **Pre-Condition puanı:** SADECE şu CSV alanlarından biri doluysa verilir:  
+- **Pre-Condition puanı:** **Sadece** şu CSV alanlardan **anlamlı içerik** varsa verilir:  
   `Custom field (Tests association with a Pre-Condition)` **veya** `Custom field (Pre-Conditions association with a Test)`.
 """)
 
@@ -111,9 +105,11 @@ def _is_meaningless(val: str) -> bool:
     meaningless = {"", "-", "—", "none", "n/a", "na", "null", "yok"}
     v = re.sub(r'\s+', ' ', (val or '')).strip().lower()
     if v in meaningless: return True
-    if re.fullmatch(r'[\[\]\{\}\(\)\.,;:\-_/\\]*', v or ""): return True
+    # sadece boşluk/noktalama/parantez vs ⇒ anlamsız
+    if re.fullmatch(r'[\s\[\]\{\}\(\)\.,;:\-_/\\]*', v or ""): return True
     return False
 
+# ---- CSV sütun adı toleransı ----
 def pick_first_existing(colnames, df_cols):
     for name in colnames:
         if name in df_cols:
@@ -152,19 +148,32 @@ def has_data_present_for_scoring(steps_text: str) -> bool:
     if re.search(r'\b(select|insert|update|delete)\b', steps_text or "", re.I): return True
     return False
 
-# ---- PRECONDITION (YALNIZCA CSV’den) ----
+# ---- PRECONDITION (YALNIZCA CSV’den, anlamlı içerik kontrolüyle) ----
 PRECOND_EXACT_COLS = [
     "Custom field (Tests association with a Pre-Condition)",
     "Custom field (Pre-Conditions association with a Test)",
 ]
 
-def precondition_provided_from_csv(row, df_cols) -> bool:
-    for col in PRECOND_EXACT_COLS:
-        if col in df_cols:
-            val = _text(row.get(col))
-            if not _is_meaningless(val):
-                return True
+def _pre_csv_has_meaningful(val: str) -> bool:
+    # HTML çöz, boşlukları normalize et
+    s = html.unescape(_text(val)).replace("\u00a0", " ")
+    s = _cleanup_html(s).strip()
+    if _is_meaningless(s): return False
+    # “[]”, “{}”, “()”, sadece virgül/noktalama → boş
+    if re.fullmatch(r'[\[\]\{\}\(\)\s\.,;:/\\\-_]*', s): return False
+    # Sık görülen issue key deseni (Jira): ABC-123
+    if re.search(r'\b[A-Z][A-Z0-9_]+-\d+\b', s): return True
+    # En az iki alfasayısal karakter (örn. gerçek bir ad/ID)
+    if re.search(r'[A-Za-zÇĞİÖŞÜçğıöşü0-9]{2,}', s): return True
     return False
+
+def precondition_provided_from_csv(row, df_cols) -> bool:
+    found = False
+    for col in PRECOND_EXACT_COLS:
+        if col in df_cols and _pre_csv_has_meaningful(row.get(col)):
+            found = True
+            break
+    return found
 
 # ---- İçerik sinyalleri (İHTİYAÇ analizi için) ----
 def scan_precond_signals(text: str):
@@ -200,251 +209,5 @@ def decide_precond_needed(summary: str, steps_text: str) -> bool:
 
 # ---- TABLO KARARI (override + içerik) ----
 def choose_table(summary: str, steps_text: str, *, data_written: bool, pre_written_csv: bool):
-    # OVERRIDE: Hem Data hem Pre CSV yazılmışsa → D
     if data_written and pre_written_csv:
         return "D", 14, [1,2,3,4,5,6,7]
-    # İhtiyaç analizi
-    data_needed = decide_data_needed(summary, steps_text)
-    pre_needed  = decide_precond_needed(summary, steps_text)
-    if data_needed and pre_needed: return "D", 14, [1,2,3,4,5,6,7]
-    if data_needed:                 return "C", 17, [1,2,3,5,6,7]
-    if pre_needed:                  return "B", 17, [1,2,4,5,6,7]
-    return "A", 20, [1,2,5,6,7]
-
-# ---- ACTION/STEPLER ----
-def extract_action_blocks(steps_text: str) -> list[str]:
-    blocks = []
-    txt_raw = _normalize_newlines(steps_text or "")
-    for m in re.finditer(r'["\']Action["\']\s*:\s*["\']((?:\\.|[^"\'])*)["\']', txt_raw, re.I | re.DOTALL):
-        val = m.group(1).replace('\\"','"').replace("\\'", "'").strip()
-        if val: blocks.append(val)
-    txt = _cleanup_html(txt_raw)
-    pattern = re.compile(
-        r'(?:^|\n)\s*(?:Action|Adım|Step)(?:\s*\d+)?\s*:?\s*(.*?)\s*(?=(?:^|\n)\s*(?:Data|Expected\s*Result|Attachments?|Action|Adım|Step)\b|$)',
-        re.I | re.DOTALL
-    )
-    for m in pattern.finditer(txt):
-        val = (m.group(1) or '').strip()
-        if val: blocks.append(val)
-    if len(blocks) <= 1:
-        split_blocks = re.split(r'(?:^|\n)\s*Step\s*\d+\s*:\s*', txt, flags=re.I)
-        split_blocks = [b.strip() for b in split_blocks if b.strip()]
-        if len(split_blocks) > 1:
-            blocks = split_blocks
-    return [b for b in blocks if b.strip()]
-
-def extract_expected_blocks(steps_text: str) -> list[str]:
-    blocks = []
-    txt_raw = _normalize_newlines(steps_text or "")
-    for m in re.finditer(r'["\']Expected\s*Result["\']\s*:\s*["\']((?:\\.|[^"\'])*)["\']', txt_raw, re.I | re.DOTALL):
-        val = m.group(1).replace('\\"','"').replace("\\'", "'").strip()
-        if val: blocks.append(val)
-    txt = _cleanup_html(txt_raw)
-    pattern = re.compile(
-        r'(?:^|\n)\s*Expected\s*Result\s*:?\s*(.*?)\s*(?=(?:^|\n)\s*(?:Action|Data|Attachments?)\b|$)',
-        re.I | re.DOTALL
-    )
-    for m in pattern.finditer(txt):
-        val = (m.group(1) or '').strip()
-        if val: blocks.append(val)
-    return [b for b in blocks if b.strip()]
-
-def is_meaningful_expected(value: str) -> bool:
-    if _is_meaningless(value): return False
-    v = value.strip()
-    return len(re.sub(r'\s+', '', v)) >= 2
-
-def has_expected_present(steps_text: str) -> bool:
-    blocks = extract_expected_blocks(steps_text)
-    return any(is_meaningful_expected(b) for b in blocks)
-
-PASSIVE_PATTERNS = re.compile(
-    r'\b(yapıldı|edildi|gerçekleştirildi|sağlandı|tamamlandı|kontrol edildi|yapılır|edilir|gerçekleştirilir|sağlanır|tamamlanır|kontrol edilir)\b',
-    re.I
-)
-def block_has_many_substeps(text: str) -> bool:
-    t = _cleanup_html(text or "")
-    if re.search(r'(^|\n)\s*(\d+[\).\-\:]|\-|\*|\•)\s+\S+', t): return True
-    lines = [ln.strip() for ln in re.split(r'(?:\n)+', t) if ln.strip()]
-    if len(lines) >= 3: return True
-    if t.count(';') >= 2: return True
-    joiners = re.findall(r'(?:,|\bve\b|\bsonra\b|\bardından\b)', t, re.I)
-    if len(joiners) >= 3: return True
-    return False
-
-# ---------- Skorlama ----------
-def score_one(row, df_cols):
-    key = _text(row.get('Issue key') or row.get('Issue Key') or row.get('Key') or row.get('IssueKey'))
-    summary = _text(row.get('Summary') or row.get('Issue Summary') or row.get('Title'))
-    priority = _text(row.get('Priority')).lower()
-
-    steps_col_name = pick_first_existing(
-        ['Custom field (Manual Test Steps)', 'Manual Test Steps', 'Steps', 'Custom Steps'],
-        df_cols
-    )
-    steps_text = _text(row.get(steps_col_name)) if steps_col_name else ""
-
-    # GERÇEK varlıklar (puanlama & override için)
-    data_present_for_scoring = has_data_present_for_scoring(steps_text)
-    precond_provided_csv     = precondition_provided_from_csv(row, df_cols)
-    expected_present         = has_expected_present(steps_text)
-
-    # İçerik analizi + override → TABLO
-    table, base, active = choose_table(
-        summary, steps_text,
-        data_written=data_present_for_scoring,
-        pre_written_csv=precond_provided_csv
-    )
-
-    # Actions
-    action_blocks = extract_action_blocks(steps_text)
-    all_actions_text = " \n ".join(action_blocks)
-
-    pts, notes, total = {}, [], 0
-
-    # 1) Başlık
-    if 1 in active:
-        if not summary or len(summary) < 10:
-            pts['Başlık'] = 0; notes.append("❌ Başlık çok kısa")
-        elif any(w in summary.lower() for w in ["test edilir", "kontrol edilir"]):
-            pts['Başlık'] = max(base-3, 1); notes.append(f"🔸 Başlık zayıf ifade ({pts['Başlık']})"); total += pts['Başlık']
-        else:
-            pts['Başlık'] = base; notes.append("✅ Başlık anlaşılır"); total += base
-
-    # 2) Öncelik
-    if 2 in active:
-        if priority in ["", "null", "none"]:
-            pts['Öncelik'] = 0; notes.append("❌ Öncelik eksik")
-        else:
-            pts['Öncelik'] = base; notes.append("✅ Öncelik var"); total += base
-
-    # 3) Data
-    if 3 in active:
-        if data_present_for_scoring:
-            pts['Data'] = base; notes.append("✅ Data mevcut (steps)"); total += base
-        else:
-            pts['Data'] = 0; notes.append("❌ Data bulunamadı")
-
-    # 4) Ön Koşul  (YALNIZCA CSV)
-    if 4 in active:
-        if precond_provided_csv:
-            pts['Ön Koşul'] = base; notes.append("✅ Pre-Condition association var (CSV)"); total += base
-        else:
-            pts['Ön Koşul'] = 0; notes.append("❌ Pre-Condition association eksik (CSV)")
-
-    # 5) Stepler
-    if 5 in active:
-        n_blocks = len(action_blocks)
-        if n_blocks == 0:
-            pts['Stepler'] = 0; notes.append("❌ Stepler boş")
-        elif n_blocks >= 2:
-            pts['Stepler'] = base; notes.append(f"✅ Stepler ayrı ve düzgün ({n_blocks} adım)"); total += base
-        else:
-            t = (action_blocks[0] or "")
-            if block_has_many_substeps(t) or PASSIVE_PATTERNS.search(t):
-                pts['Stepler'] = 1; notes.append("❌ Tek blokta çok adım veya edilgen ifade (1 puan)"); total += 1
-            else:
-                pts['Stepler'] = base; notes.append("✅ Tek step ama net/tek eylem"); total += base
-
-    # 6) Client
-    if 6 in active:
-        ck = ["android","ios","web","mac","windows","chrome","safari","firefox","edge"]
-        if any(c in (summary or "").lower() for c in ck) or any(c in (all_actions_text or "").lower() for c in ck):
-            pts['Client'] = base; notes.append("✅ Client bilgisi var"); total += base
-        else:
-            pts['Client'] = 0; notes.append("❌ Client bilgisi eksik")
-
-    # 7) Expected
-    if 7 in active:
-        if expected_present:
-            pts['Expected'] = base; notes.append("✅ Expected mevcut (en az bir adım)"); total += base
-        else:
-            pts['Expected'] = 0; notes.append("❌ Expected result eksik")
-
-    return {
-        "Key": key, "Summary": summary, "Tablo": table, "Toplam Puan": total,
-        **pts, "Açıklama": " | ".join(notes)
-    }
-
-# ---------- Çalıştır ----------
-if uploaded:
-    try:
-        df = pd.read_csv(uploaded, sep=';')
-    except Exception:
-        df = pd.read_csv(uploaded)
-
-    n = min(sample_size, len(df))
-    sample = df.sample(n=n, random_state=(123 + st.session_state.reroll) if fix_seed else None) if len(df)>0 else df
-
-    results = sample.apply(lambda r: score_one(r, df.columns), axis=1, result_type='expand')
-
-    total_cases = len(results)
-    avg_score  = round(results["Toplam Puan"].mean() if total_cases else 0, 1)
-    min_score  = int(results["Toplam Puan"].min()) if total_cases else 0
-    max_score  = int(results["Toplam Puan"].max()) if total_cases else 0
-    dist = results['Tablo'].value_counts().reindex(["A","B","C","D"]).fillna(0).astype(int)
-
-    c1,c2,c3,c4 = st.columns(4)
-    with c1: st.markdown(f'<div class="kpi"><div class="kpi-title">Toplam Örnek</div><div class="kpi-value">{total_cases}</div><div class="kpi-sub">Değerlendirilen</div></div>', unsafe_allow_html=True)
-    with c2: st.markdown(f'<div class="kpi"><div class="kpi-title">Dağılım (A/B/C/D)</div><div class="kpi-value">{dist["A"]}/{dist["B"]}/{dist["C"]}/{dist["D"]}</div><div class="kpi-sub">Tablo adetleri</div></div>', unsafe_allow_html=True)
-    with c3: st.markdown(f'<div class="kpi"><div class="kpi-title">Ortalama Skor</div><div class="kpi-value">{avg_score}</div><div class="kpi-sub">Min: {min_score} • Max: {max_score}</div></div>', unsafe_allow_html=True)
-    with c4: st.markdown(f'<div class="kpi"><div class="kpi-title">Rapor Zamanı</div><div class="kpi-value">{datetime.now().strftime("%H:%M")}</div><div class="kpi-sub">Yerel saat</div></div>', unsafe_allow_html=True)
-
-    st.markdown("### 📈 Tablo Dağılımı")
-    st.bar_chart(dist)
-
-    MAX_BY_TABLE = {"A": 100, "B": 102, "C": 102, "D": 98}
-    results["Maks Puan"] = results["Tablo"].map(MAX_BY_TABLE).fillna(100)
-    results["Skor %"] = (results["Toplam Puan"] / results["Maks Puan"]).clip(0,1) * 100
-    results["Skor %"] = results["Skor %"].round(1)
-
-    show_df = results[["Key","Summary","Tablo","Toplam Puan","Skor %","Açıklama"]].copy()
-    st.markdown("## 📊 Değerlendirme Tablosu")
-    st.dataframe(
-        show_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Key": st.column_config.TextColumn("Key", help="Issue key"),
-            "Summary": st.column_config.TextColumn("Summary", width="medium"),
-            "Tablo": st.column_config.TextColumn("Tablo"),
-            "Toplam Puan": st.column_config.NumberColumn("Toplam Puan", format="%d"),
-            "Skor %": st.column_config.ProgressColumn("Skor %", min_value=0, max_value=100, help="Toplam puanın tablo maksimumuna oranı"),
-            "Açıklama": st.column_config.TextColumn("Açıklama", width="large"),
-        }
-    )
-
-    st.download_button(
-        "📥 Sonuçları CSV olarak indir",
-        data=show_df.to_csv(index=False, sep=';', encoding='utf-8'),
-        file_name=f"testcase_skorlari_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv"
-    )
-
-    st.markdown("## 📝 Detaylar")
-    badge_map = {"A":"badge badge-a","B":"badge badge-b","C":"badge badge-c","D":"badge badge-d"}
-
-    for _, r in results.iterrows():
-        max_pt = MAX_BY_TABLE.get(r["Tablo"], 100)
-        pct = float(r["Toplam Puan"]) / max_pt if max_pt else 0
-        badge_class = badge_map.get(r["Tablo"], "badge")
-
-        st.markdown('<div class="case-card">', unsafe_allow_html=True)
-        st.markdown(f'''
-            <div class="case-head">
-              <div class="case-title">🔍 {r["Key"]} — {r["Summary"]}</div>
-              <div class="case-meta"><span class="{badge_class}">Tablo {r["Tablo"]}</span></div>
-            </div>
-        ''', unsafe_allow_html=True)
-
-        cL, cR = st.columns([3,1])
-        with cL:
-            st.markdown(f"**Toplam Puan:** `{int(r['Toplam Puan'])}` / `{int(max_pt)}`")
-            st.progress(min(max(pct,0),1.0))
-        with cR:
-            st.markdown(f"**Skor %:** **{round(pct*100,1)}%**")
-
-        st.markdown("<hr class='hr-soft'/>", unsafe_allow_html=True)
-        for k in ['Başlık','Öncelik','Data','Ön Koşul','Stepler','Client','Expected']:
-            if k in r and pd.notna(r[k]):
-                st.markdown(f"- **{k}**: {int(r[k])} puan")
