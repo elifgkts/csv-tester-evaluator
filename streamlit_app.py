@@ -4,10 +4,10 @@ import random
 import re
 
 st.set_page_config(page_title="Test Case Değerlendirici", layout="wide")
-st.title("📋 Test Case Kalite Değerlendirmesi ")
+st.title("📋 Test Case Kalite Değerlendirmesi")
 
 st.markdown("""
-Bu uygulama, test caselerinizi **A, B, C veya D tablosuna** göre değerlendirir.
+Bu uygulama, test caselerinizi **A, B, C veya D tablosuna** göre değerlendirir.  
 Her test case'in ait olduğu tablo, **senaryo içeriğine göre otomatik belirlenir** ve 7 kritere göre puanlama yapılır.
 """)
 
@@ -42,19 +42,18 @@ with st.expander("📌 Değerlendirme Kuralları ve Kriter Açıklamaları"):
 - Test datası sadece **Manual Test Steps** içindeki `Data:` kısmına bakılarak kontrol edilir.
 - Expected Result alanı gerçekten beklenen sonuç belirtmiyorsa, eksik sayılır.
 - Step alanında **tüm işlemler tek bir satıra yazılmışsa**, bu durum hatalı sayılır ve **tam puan yerine kırıntı puan (1-5 arası)** verilir.
-- Test başlığı kötü yazılmışsa yine **tam sıfır değil**, 1-5 puanlık bir kırıntı puan verilir.
-- "test edilir", "kontrol edilir" gibi ifadeler summary'de veya expected'da varsa puan düşer.
+- Test başlığı "test edilir" gibi ifadelerle bitiyorsa, **daha zayıf kabul edilir ve 1-3 puan kırılır**.
 """)
 
-# 📌 Kaç test case değerlendirilsin?
-sample_size = st.slider("🎯 Kaç test case örneği değerlendirilsin?", min_value=1, max_value=50, value=5)
+sample_size = st.slider("📌 Kaç test case örneği değerlendirilsin?", min_value=1, max_value=50, value=5)
 
 # 📤 CSV Yükleme
 uploaded_file = st.file_uploader("📤 CSV dosyanızı yükleyin", type="csv")
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file, sep=';')
-    st.success("✅ Dosya başarıyla yüklendi. Şimdi örnekleri puanlayalım.")
+    st.success("✅ Dosya başarıyla yüklendi. Şimdi örnekler değerlendiriliyor...")
+
     sampled_df = df.sample(n=sample_size, random_state=42)
 
     def score_case(row):
@@ -78,112 +77,128 @@ if uploaded_file:
         if testdata_needed and precondition_needed:
             table = "D"
             base = 14
-            aktif_kriterler = [1, 2, 3, 4, 5, 6, 7]
+            aktif = [1,2,3,4,5,6,7]
         elif testdata_needed:
             table = "C"
             base = 17
-            aktif_kriterler = [1, 2, 3, 5, 6, 7]
+            aktif = [1,2,3,5,6,7]
         elif precondition_needed:
             table = "B"
             base = 17
-            aktif_kriterler = [1, 2, 4, 5, 6, 7]
+            aktif = [1,2,4,5,6,7]
         else:
             table = "A"
             base = 20
-            aktif_kriterler = [1, 2, 5, 6, 7]
+            aktif = [1,2,5,6,7]
 
-        puanlar = {"Başlık": 0, "Öncelik": 0, "Data": 0, "Ön Koşul": 0, "Stepler": 0, "Client": 0, "Expected": 0}
-        explanations = []
-        total = 0
+        puanlar = {}
+        açıklamalar = []
+        toplam = 0
 
-        if 1 in aktif_kriterler:
+        if 1 in aktif:
             if len(summary) < 10:
-                explanations.append("❌ Test başlığı çok kısa, yeterli değil (0 puan)")
-            elif any(word in summary.lower() for word in ["alanına gidilir", "tıklanır", "test edilir"]):
-                explanations.append(f"🔸 Test başlığı zayıf ifade edilmiş: {summary} (puan: {base-3})")
-                puanlar["Başlık"] = base - 3
+                puanlar['Başlık'] = 0
+                açıklamalar.append("❌ Başlık çok kısa (0)")
+            elif any(w in summary.lower() for w in ["test edilir", "kontrol edilir"]):
+                puanlar['Başlık'] = base - 3
+                açıklamalar.append(f"🔸 Başlık test ifadesi içeriyor (puan: {base - 3})")
+                toplam += base - 3
             else:
-                explanations.append("✅ Test başlığı anlaşılır")
-                puanlar["Başlık"] = base
+                puanlar['Başlık'] = base
+                açıklamalar.append("✅ Başlık anlaşılır")
+                toplam += base
 
-        if 2 in aktif_kriterler:
+        if 2 in aktif:
             if priority in ["", "null", "none"]:
-                explanations.append("❌ Öncelik bilgisi eksik")
+                puanlar['Öncelik'] = 0
+                açıklamalar.append("❌ Öncelik bilgisi eksik")
             else:
-                explanations.append("✅ Öncelik bilgisi girilmiş")
-                puanlar["Öncelik"] = base
+                puanlar['Öncelik'] = base
+                açıklamalar.append("✅ Öncelik bilgisi var")
+                toplam += base
 
-        if 3 in aktif_kriterler:
+        if 3 in aktif:
             if data.strip():
-                explanations.append("✅ Test datası girilmiş")
-                puanlar["Data"] = base
+                puanlar['Data'] = base
+                açıklamalar.append("✅ Test datası var")
+                toplam += base
             else:
-                explanations.append("❌ Test datası eksik")
+                puanlar['Data'] = 0
+                açıklamalar.append("❌ Test datası eksik")
 
-        if 4 in aktif_kriterler:
+        if 4 in aktif:
             if precondition_needed:
-                explanations.append("✅ Ön koşul gerekli ve label'da belirtilmiş")
-                puanlar["Ön Koşul"] = base
+                puanlar['Ön Koşul'] = base
+                açıklamalar.append("✅ Ön koşul gerekli ve belirtilmiş")
+                toplam += base
             else:
-                explanations.append("❌ Ön koşul gerekli ancak eksik")
+                puanlar['Ön Koşul'] = 0
+                açıklamalar.append("❌ Ön koşul eksik")
 
-        if 5 in aktif_kriterler:
+        if 5 in aktif:
             if not action.strip():
-                explanations.append("❌ Step alanı tamamen boş")
-            elif any(token in action for token in [",", " ve ", " ardından ", " sonra"]):
-                explanations.append(f"🔸 Adımlar tek stepe yazılmış: {action} (puan: 3)")
-                puanlar["Stepler"] = 3
+                puanlar['Stepler'] = 0
+                açıklamalar.append("❌ Stepler boş")
+            elif any(x in action for x in [",", " ardından ", " sonra ", " ve "]):
+                puanlar['Stepler'] = 3
+                açıklamalar.append(f"🔸 Step birleşik (puan: 3)")
+                toplam += 3
             else:
-                explanations.append("✅ Stepler doğru şekilde ayrılmış")
-                puanlar["Stepler"] = base
+                puanlar['Stepler'] = base
+                açıklamalar.append("✅ Stepler ayrılmış")
+                toplam += base
 
-        if 6 in aktif_kriterler:
-            client_keywords = ["android", "ios", "web", "mac", "windows"]
-            if any(kw in summary.lower() for kw in client_keywords) or any(kw in action.lower() for kw in client_keywords):
-                explanations.append("✅ Client bilgisi var")
-                puanlar["Client"] = base
+        if 6 in aktif:
+            clients = ["android", "ios", "web", "mac", "windows"]
+            if any(c in summary.lower() for c in clients) or any(c in action.lower() for c in clients):
+                puanlar['Client'] = base
+                açıklamalar.append("✅ Client bilgisi var")
+                toplam += base
             else:
-                explanations.append("❌ Hangi clientta koşulacağı belirtilmemiş")
+                puanlar['Client'] = 0
+                açıklamalar.append("❌ Client bilgisi eksik")
 
-        if 7 in aktif_kriterler:
+        if 7 in aktif:
             if not expected.strip():
-                explanations.append("❌ Expected result tamamen boş")
-            elif any(word in expected.lower() for word in ["test edilir", "kontrol edilir"]):
-                explanations.append(f"🔸 Expected result zayıf ifade edilmiş: {expected} (puan: {base-3})")
-                puanlar["Expected"] = base - 3
+                puanlar['Expected'] = 0
+                açıklamalar.append("❌ Expected result eksik")
+            elif any(w in expected.lower() for w in ["test edilir", "kontrol edilir"]):
+                puanlar['Expected'] = base - 3
+                açıklamalar.append(f"🔸 Expected zayıf ifade (puan: {base - 3})")
+                toplam += base - 3
             else:
-                explanations.append("✅ Expected result düzgün yazılmış")
-                puanlar["Expected"] = base
-
-        total = sum(puanlar.values())
+                puanlar['Expected'] = base
+                açıklamalar.append("✅ Expected result düzgün")
+                toplam += base
 
         return {
             "Key": key,
             "Summary": summary,
             "Tablo": table,
-            "Toplam Puan": total,
+            "Toplam Puan": toplam,
             **puanlar,
+            "Açıklama": " | ".join(açıklamalar),
             "Action": action,
             "Data": data,
-            "Expected Result": expected,
-            "Açıklama": explanations
+            "Expected Result": expected
         }
 
     sonuçlar = sampled_df.apply(score_case, axis=1, result_type='expand')
+    st.markdown("## 📊 Değerlendirme Tablosu")
+    st.dataframe(sonuçlar.set_index("Key").T)
 
-    st.markdown("## 📊 Değerlendirme Sonuçları")
-    st.dataframe(sonuçlar.drop(columns=["Açıklama"]))
+    st.download_button("📥 Sonuçları CSV olarak indir", data=sonuçlar.to_csv(index=False, sep=';', encoding='utf-8'), file_name="testcase_skorlari.csv", mime="text/csv")
 
-    csv = sonuçlar.to_csv(index=False, sep=';', encoding='utf-8')
-    st.download_button("📥 Sonuçları indir (CSV)", data=csv, file_name="testcase_skorlari.csv", mime="text/csv")
-
-    st.markdown("## 📝 Detaylı Açıklamalar")
+    st.markdown("## 📝 Detaylı İnceleme")
     for _, row in sonuçlar.iterrows():
-        st.markdown(f"### 🔍 {row['Key']} — {row['Summary']}")
-        st.markdown(f"**Tablo:** `{row['Tablo']}`  |  **Puan:** `{row['Toplam Puan']}`")
-        st.markdown(f"**🎯 Kriter Bazlı Puanlar:**")
-        for k in ["Başlık", "Öncelik", "Data", "Ön Koşul", "Stepler", "Client", "Expected"]:
-            st.markdown(f"- {k}: `{row[k]}`")
-        st.markdown("**🧾 Açıklamalar:**")
-        for aciklama in row['Açıklama']:
-            st.markdown(f"- {aciklama}")
+        st.markdown(f"### 🔍 {row['Key']} | {row['Summary']}")
+        st.markdown(f"📌 **Tablo:** `{row['Tablo']}` | 🧮 **Toplam Puan:** `{row['Toplam Puan']}`")
+        st.markdown(f"📍 **Action:** `{row['Action']}`")
+        st.markdown(f"📍 **Data:** `{row['Data']}`")
+        st.markdown(f"📍 **Expected Result:** `{row['Expected Result']}`")
+
+        for kriter in ['Başlık', 'Öncelik', 'Data', 'Ön Koşul', 'Stepler', 'Client', 'Expected']:
+            if kriter in row:
+                st.markdown(f"➡️ **{kriter}**: {row[kriter]} puan")
+
+        st.markdown(f"🗒️ Açıklamalar: {row['Açıklama']}")
