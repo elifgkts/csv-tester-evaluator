@@ -132,7 +132,7 @@ if uploaded_file:
 
         total = sum(item['points'] for item in breakdown)
         return {
-            "Key": row['Key'],
+            "Key": row['Issue key'],
             "Summary": row['Summary'],
             "Tablo": table,
             "Toplam Puan": total,
