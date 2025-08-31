@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v1.9.1 – Tablo seçimi sadece Summary+Steps sinyallerine göre
+# 📌 Test Case Evaluator v1.9.2 – Doğru tablo seçimi (Summary+Steps sinyalleri) + UI + açıklamalı gerekçe
 import streamlit as st
 import pandas as pd
 import re
 import time
 import random
+import html
 from datetime import datetime
 
 # ---------- Sayfa & Stil ----------
@@ -51,7 +52,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 st.markdown(f"""
 <div class="app-hero">
   <h1>📋 Test Case Kalite Değerlendirmesi</h1>
-  <p>Tablo (A/B/C/D) sadece <b>Summary + Steps</b> içeriğinden çıkarılır; <b>Data sütunu</b> yalnızca puanlamada kullanılır.
+  <p>Tablo (A/B/C/D) yalnızca <b>Summary + Steps</b> içeriğine göre; <b>Data</b> sütunu sadece puanda dikkate alınır.
   <span style="opacity:0.8">Rapor zamanı: {datetime.now().strftime('%d.%m.%Y %H:%M')}</span></p>
 </div>
 """, unsafe_allow_html=True)
@@ -79,14 +80,24 @@ uploaded = st.file_uploader("📤 CSV yükle (`;` ayraçlı)", type="csv")
 def _text(x): 
     return str(x or "")
 
+def norm(text: str) -> str:
+    """HTML temizliği + whitespace normalize"""
+    t = _text(text)
+    t = html.unescape(t)
+    t = re.sub(r'<[^>]+>', ' ', t)              # tag'leri at
+    t = t.replace("&nbsp;", " ")
+    t = re.sub(r'\s+', ' ', t).strip()
+    return t
+
 def _match(pattern, text):
     return re.search(pattern, text or "", re.IGNORECASE)
 
 def has_data_tag(steps_text:str) -> bool:
     # Puan için Data etiketi
-    return bool(re.search(r'(?:^|\n|\r)\s*[-\s]*Data\s*:', steps_text or "", re.IGNORECASE))
+    return bool(re.search(r'(?:^|\n|\r|\|)\s*[-\s]*Data\s*[:|]', steps_text or "", re.IGNORECASE))
 
 def extract_first(text, key):
+    # JSON benzeri içerikten "Key": "..." yakala (multi-line izinli)
     m = re.search(rf'"{key}"\s*:\s*"(.*?)"', text or "", re.IGNORECASE | re.DOTALL)
     return m.group(1).strip() if m else ""
 
@@ -97,50 +108,74 @@ def has_data_present_for_scoring(steps_text:str) -> bool:
     matches = re.findall(r'"Data"\s*:\s*"(.*?)"', steps_text or "", re.IGNORECASE | re.DOTALL)
     return any(len((m or "").strip()) > 0 for m in matches)
 
-# --- Sadece summary+steps'ten sinyaller (tablo seçimi için) ---
+# --- Sinyaller (TABLO SEÇİMİ için sadece summary+steps üzerinden) ---
+INPUT_VERB = r'(gir(ilir|in|)|doldur(ulur|)|yaz(ılır|)|seç(ilir|)|enter|fill|input|type)'
+ID_WORDS = r'(msisdn|token|iban|imei|email|e-?posta|username|password|pass|user[_\-]?id|order[_\-]?id|uuid|guid|isbn|tckn|tax|vergi)'
 def scan_data_signals(text:str):
     t = (text or "").lower()
-    signals = []
-    if _match(r'\b(select|insert|update|delete)\b', t): signals.append("SQL")
-    if _match(r'"\w+"\s*:\s*".+?"', t) and _match(r'\b(json|payload|body|headers|content-type|request|response)\b', t): signals.append("JSON body")
-    if _match(r'\b(msisdn|token|iban|imei|email|username|password|user[_\-]?id|subscriber|isbn)\b', t): signals.append("Kimlik alanı")
-    if _match(r'\b(post|put|patch)\b', t) and _match(r'\b(body|payload)\b', t): signals.append("POST payload")
-    if _match(r'<\s*(msisdn|token|iban|imei|email|username|password|user[_\-]?id|isbn)\s*>', t) or \
-       _match(r'\{\s*(msisdn|token|iban|imei|email|username|password|user[_\-]?id|isbn)\s*\}', t): signals.append("Placeholder(ID)")
-    if _match(r'https?://', t) and (_match(r'\b(api|endpoint|request|postman)\b', t) or _match(r'[\?\=]', t)):
-        signals.append("API/URL")
-    return signals
+    sig = []
+
+    # 1) SQL
+    if _match(r'\b(select|insert|update|delete|from|where|join)\b', t): sig.append("SQL")
+
+    # 2) JSON body benzeri
+    if _match(r'"\w+"\s*:\s*".+?"', t) and _match(r'\b(json|payload|body|headers|content-type|request|response)\b', t):
+        sig.append("JSON body")
+
+    # 3) Kimlik alanları / anahtar sözcükler
+    if _match(rf'\b{ID_WORDS}\b', t):
+        sig.append("Kimlik alanı")
+
+    # 4) HTTP API / URL (query paramı veya api/endpoint/postman)
+    if _match(r'https?://', t) and (_match(r'\b(api|endpoint|request|postman|graphql)\b', t) or _match(r'[\?\&]\w+=', t)):
+        sig.append("API/URL")
+
+    # 5) Path param/placeholder {id} / <id>
+    if _match(r'\{[^}]*id[^}]*\}', t) or _match(r'<[^>]*id[^>]*>', t):
+        sig.append("Path param")
+
+    # 6) Uzun sayılar + input fiili (ID/MSISDN/TCKN/iban parçası vs.)
+    if _match(INPUT_VERB, t) and (_match(r'\b\d{8,}\b', t) or _match(r'\btr\d{8,}\b', t) or _match(r'[0-9a-f]{8}-[0-9a-f]{4}-', t)):
+        sig.append("Girdi+Değer")
+
+    # 7) IBAN/TCKN/Telefon/email doğrudan
+    if _match(r'\btr\d{24}\b', t): sig.append("IBAN")
+    if _match(r'\b\d{11}\b', t): sig.append("TCKN/11hane")
+    if _match(r'\b0?5\d{9}\b', t): sig.append("Telefon")
+    if _match(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', t): sig.append("Email")
+
+    return list(dict.fromkeys(sig))  # benzersiz, sıralı
 
 def scan_precond_signals(text:str):
     t = (text or "").lower()
-    signals = []
-    if _match(r'\bprecondition\b|ön\s*koşul|given .*already', t): signals.append("Precondition ifadesi")
-    if _match(r'\b(logged in|login|giriş yap(mış|ın)|authenticated|auth)\b', t): signals.append("Login/Auth")
-    if _match(r'\b(subscription|abonelik)\b.*\b(aktif|var|existing)\b', t): signals.append("Abonelik aktif")
-    if _match(r'\bexisting user|mevcut kullanıcı\b', t): signals.append("Mevcut kullanıcı/hesap")
-    if _match(r'\b(seed|setup|config(ure|)|feature flag|whitelist|allowlist|role|permission)\b', t): signals.append("Ortam/Ayar/Yetki")
-    return signals
+    sig = []
+    if _match(r'\bprecondition\b|ön\s*koşul|ön\s*şart|given .*already', t): sig.append("Precondition ifadesi")
+    if _match(r'\b(logged in|login|sign in|session|giriş yap(mış|ın)|authenticated|auth|bearer|authorization)\b', t): sig.append("Login/Auth")
+    if _match(r'\b(subscription|abonelik)\b.*\b(aktif|var|existing)\b', t): sig.append("Abonelik aktif")
+    if _match(r'\bexisting user|mevcut kullanıcı|kayıtlı kullanıcı|account exists\b', t): sig.append("Mevcut kullanıcı")
+    if _match(r'\b(seed|setup|config(ure|)|feature flag|whitelist|allowlist|role|permission|yetki)\b', t): sig.append("Ortam/Ayar/Yetki")
+    return list(dict.fromkeys(sig))
 
-def decide_data_needed(summary:str, steps_text:str) -> bool:
-    """Sadece summary+steps sinyalleriyle data gereksinimi."""
-    combined = (summary or "") + "\n" + (steps_text or "")
-    return len(set(scan_data_signals(combined))) >= 1
+def decide_data_needed(summary:str, steps_text:str):
+    combined = norm(summary) + "\n" + norm(steps_text)
+    return len(scan_data_signals(combined)) >= 1
 
-def decide_precond_needed(summary:str, steps_text:str) -> bool:
-    """Sadece summary+steps sinyalleriyle ön koşul gereksinimi."""
-    combined = (summary or "") + "\n" + (steps_text or "")
-    return len(set(scan_precond_signals(combined))) >= 1
+def decide_precond_needed(summary:str, steps_text:str):
+    combined = norm(summary) + "\n" + norm(steps_text)
+    return len(scan_precond_signals(combined)) >= 1
 
 def choose_table(summary, steps_text):
-    data_needed = decide_data_needed(summary, steps_text)
-    pre_needed  = decide_precond_needed(summary, steps_text)
+    data_sigs = scan_data_signals(norm(summary) + " " + norm(steps_text))
+    pre_sigs  = scan_precond_signals(norm(summary) + " " + norm(steps_text))
+    data_needed = len(data_sigs) >= 1
+    pre_needed  = len(pre_sigs)  >= 1
     if data_needed and pre_needed:
-        return "D", 14, [1,2,3,4,5,6,7]
+        return "D", 14, [1,2,3,4,5,6,7], data_sigs, pre_sigs
     if data_needed:
-        return "C", 17, [1,2,3,5,6,7]
+        return "C", 17, [1,2,3,5,6,7], data_sigs, pre_sigs
     if pre_needed:
-        return "B", 17, [1,2,4,5,6,7]
-    return "A", 20, [1,2,5,6,7]
+        return "B", 17, [1,2,4,5,6,7], data_sigs, pre_sigs
+    return "A", 20, [1,2,5,6,7], data_sigs, pre_sigs
 
 # ---------- Skorlama ----------
 def score_one(row):
@@ -149,17 +184,28 @@ def score_one(row):
     priority = _text(row.get('Priority')).lower()
     steps_text = _text(row.get('Custom field (Manual Test Steps)'))
 
+    # TABLO: sadece summary+steps
+    table, base, active, data_sigs, pre_sigs = choose_table(summary, steps_text)
+
+    # Puanlanacak alanlar için Action/Expected (opsiyonel; JSON formunda ise yakalar)
     action = extract_first(steps_text, "Action")
     expected = extract_first(steps_text, "Expected Result")
 
-    # TABLO: sadece summary+steps
-    table, base, active = choose_table(summary, steps_text)
-
     pts, notes, total = {}, [], 0
+
+    # Tablo gerekçesi (özenli açıklama)
+    if table == "A":
+        notes.append("🧭 Sınıflandırma: Tablo A — data & precondition sinyali tespit edilmedi.")
+    elif table == "B":
+        notes.append(f"🧭 Sınıflandırma: Tablo B — önkoşul sinyalleri: {', '.join(pre_sigs)}.")
+    elif table == "C":
+        notes.append(f"🧭 Sınıflandırma: Tablo C — data sinyalleri: {', '.join(data_sigs)}.")
+    else:
+        notes.append(f"🧭 Sınıflandırma: Tablo D — data: {', '.join(data_sigs)}; pre: {', '.join(pre_sigs)}.")
 
     # 1) Başlık
     if 1 in active:
-        if not summary or len(summary) < 10:
+        if not summary or len(norm(summary)) < 10:
             pts['Başlık'] = 0; notes.append("❌ Başlık çok kısa")
         elif any(w in summary.lower() for w in ["test edilir", "kontrol edilir"]):
             pts['Başlık'] = max(base-3, 1); notes.append(f"🔸 Başlık zayıf ifade ({pts['Başlık']})"); total += pts['Başlık']
@@ -180,14 +226,14 @@ def score_one(row):
         else:
             pts['Data'] = 0; notes.append("❌ Data belirtilmemiş")
 
-    # 4) Ön Koşul – sadece PUAN (tablo zaten summary+steps'ten seçildi)
+    # 4) Ön Koşul – sadece PUAN
     if 4 in active:
         if decide_precond_needed(summary, steps_text):
             pts['Ön Koşul'] = base; notes.append("✅ Ön koşul belirtilmiş/ima edilmiş"); total += base
         else:
             pts['Ön Koşul'] = 0; notes.append("❌ Ön koşul eksik")
 
-    # 5) Stepler
+    # 5) Stepler – kırıntı mantığı
     if 5 in active:
         if not action.strip():
             pts['Stepler'] = 0; notes.append("❌ Stepler boş")
@@ -200,7 +246,7 @@ def score_one(row):
     # 6) Client
     if 6 in active:
         ck = ["android","ios","web","mac","windows","chrome","safari"]
-        if any(c in summary.lower() for c in ck) or any(c in action.lower() for c in ck):
+        if any(c in norm(summary).lower() for c in ck) or any(c in norm(action).lower() for c in ck):
             pts['Client'] = base; notes.append("✅ Client bilgisi var"); total += base
         else:
             pts['Client'] = 0; notes.append("❌ Client bilgisi eksik")
@@ -216,8 +262,8 @@ def score_one(row):
 
     return {
         "Key": key,
-        "Summary": summary,
-        "Tablo": table,          # <— sadece summary+steps'e göre
+        "Summary": norm(summary),
+        "Tablo": table,          # <— yalnızca summary+steps sinyalleri
         "Toplam Puan": total,
         **pts,
         "Açıklama": " | ".join(notes),
