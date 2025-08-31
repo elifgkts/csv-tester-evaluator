@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v2.4
+# 📌 Test Case Evaluator v2.5
 # - Dark mode CSS
-# - Data/Precondition: gerçek içerik kontrolü (HTML/JSON/blok)
+# - Data/Precondition: gerçek içerik kontrolü (HTML/JSON/blok başlıkları)
 # - Expected Result: TÜM adımlar taranır; herhangi birinde varsa puan
-# - Stepler: yapı algısı + adil “birleşik” kırpması
+# - Stepler: “tek step içine çok adım yazma” tespiti (blok sayısı + birleşik içerik analizi)
 # - KPI, tablo, CSV ve Detay Kartları + debug
 
 import streamlit as st
@@ -223,41 +223,56 @@ def choose_table(summary: str, steps_text: str):
     if pre_needed: return "B", 17, [1,2,4,5,6,7]
     return "A", 20, [1,2,5,6,7]
 
-# ---- ACTION/STEPLER yapısı ----
-def _split_actions_lines(action_text: str) -> list[str]:
-    """Action alanını potansiyel step satırlarına böler."""
-    t = _cleanup_html(action_text or "")
-    lines = re.split(r'(?:\r?\n)+', t.strip())
-    if len(lines) <= 1:
-        lines = re.split(r'\s*;\s*', t.strip())
-    lines = [ln.strip() for ln in lines if ln and not _is_meaningless(ln)]
-    return lines
+# ---- ACTION/STEPLER: tüm Action bloklarını çıkar ----
+def extract_action_blocks(steps_text: str) -> list[str]:
+    blocks = []
+    # JSON "Action":"..."
+    for m in re.finditer(r'"Action"\s*:\s*"(?:\\.|[^"])*"', steps_text or "", re.IGNORECASE | re.DOTALL):
+        raw = m.group(0)
+        val = re.sub(r'^.*?":\s*"(.*)"$', r'\1', raw, flags=re.DOTALL)
+        val = val.replace('\\"', '"').strip()
+        if val:
+            blocks.append(val)
+    # HTML/metin: Action başlığından bir sonraki başlığa
+    txt = _cleanup_html(steps_text)
+    pattern = re.compile(
+        r'(?:^|\n)\s*Action\s*:?\s*(.*?)\s*(?=(?:^|\n)\s*(?:Data|Expected\s*Result|Attachments?)\b|$)',
+        re.IGNORECASE | re.DOTALL
+    )
+    for m in pattern.finditer(txt):
+        val = m.group(1).strip()
+        if val:
+            blocks.append(val)
+    return [b for b in blocks if b.strip()]
 
-def actions_are_well_structured(action_text: str) -> bool:
-    """Gerçekten ayrı ayrı ve okunaklı step’ler var mı?"""
-    lines = _split_actions_lines(action_text)
-    if len(lines) >= 2:
-        numbered_or_bulleted = sum(1 for ln in lines if re.match(r'^(\d+[\).\-\:]|\-|\*|\•)\s+', ln))
-        shortish = sum(1 for ln in lines if len(ln) <= 140)
-        if numbered_or_bulleted >= 1:
-            return True
-        if shortish >= 2:
-            long_joiners = sum(1 for ln in lines if re.search(r'\b(ardından|sonra)\b', ln, re.I))
-            if long_joiners <= len(lines) // 2:
-                return True
+def block_has_many_substeps(text: str) -> bool:
+    """Tek Action bloğu içinde çok adım yazılmış mı? (numara/bullet/; veya ≥3 bağlaç/virgül)"""
+    t = _cleanup_html(text or "")
+    # açık göstergeler: numaralandırma/bullet
+    if re.search(r'(^|\n)\s*(\d+[\).\-\:]|\-|\*|\•)\s+\S+', t):
+        return True
+    # satır satır çok eylem
+    lines = [ln.strip() for ln in re.split(r'(?:\r?\n)+', t) if ln.strip()]
+    if len(lines) >= 3:
+        return True
+    # aynı satırda ; ile zincirlenmiş ≥2 parça
+    if t.count(';') >= 2:
+        return True
+    # bağlaç/virgül yoğunluğu (≥3 parça)
+    joiners = re.findall(r'(?:,|\bve\b|\bsonra\b|\bardından\b)', t, re.I)
+    if len(joiners) >= 3:
+        return True
     return False
 
 # ---- EXPECTED: tüm adımlardan topla ----
 def extract_expected_blocks(steps_text: str) -> list[str]:
     blocks = []
-    # JSON "Expected Result":"..."
     for m in re.finditer(r'"Expected\s*Result"\s*:\s*"(?:\\.|[^"])*"', steps_text or "", re.IGNORECASE | re.DOTALL):
         raw = m.group(0)
         val = re.sub(r'^.*?":\s*"(.*)"$', r'\1', raw, flags=re.DOTALL)
         val = val.replace('\\"', '"').strip()
         if val:
             blocks.append(val)
-    # HTML/metin: Expected Result başlığından bir sonraki başlığa
     txt = _cleanup_html(steps_text)
     pattern = re.compile(
         r'(?:^|\n)\s*Expected\s*Result\s*:?\s*(.*?)\s*(?=(?:^|\n)\s*(?:Action|Data|Attachments?)\b|$)',
@@ -273,10 +288,7 @@ def is_meaningful_expected(value: str) -> bool:
     if _is_meaningless(value):
         return False
     v = value.strip()
-    # sırf “None”/“Yok” olmayan her içerik kural olarak kabul; yine de çok kısa tek kelimeyi eleyelim
-    if len(re.sub(r'\s+', '', v)) < 2:
-        return False
-    return True
+    return len(re.sub(r'\s+', '', v)) >= 2
 
 def has_expected_present(steps_text: str) -> bool:
     blocks = extract_expected_blocks(steps_text)
@@ -289,7 +301,8 @@ def score_one(row):
     priority = _text(row.get('Priority')).lower()
     steps_text = _text(row.get('Custom field (Manual Test Steps)'))
 
-    action = extract_first(steps_text, "Action")  # yapısal kontrol için ilkini alıyoruz
+    action_blocks = extract_action_blocks(steps_text)
+    all_actions_text = " \n ".join(action_blocks)
     expected_present = has_expected_present(steps_text)
 
     table, base, active = choose_table(summary, steps_text)
@@ -326,29 +339,29 @@ def score_one(row):
         else:
             pts['Ön Koşul'] = 0; notes.append("❌ Ön koşul eksik")
 
-    # 5) Stepler – yapı kontrolü + adil kırpma
+    # 5) Stepler – çok adımı tek stepte birleştirme var mı?
     if 5 in active:
-        if not (action or "").strip():
+        n_blocks = len(action_blocks)
+        if n_blocks == 0:
             pts['Stepler'] = 0; notes.append("❌ Stepler boş")
+        elif n_blocks >= 2:
+            pts['Stepler'] = base; notes.append(f"✅ Stepler ayrı ve düzgün ({n_blocks} adım)")
+            total += base
         else:
-            if actions_are_well_structured(action):
-                pts['Stepler'] = base; notes.append("✅ Stepler ayrı ve düzgün"); total += base
+            # n_blocks == 1
+            if block_has_many_substeps(action_blocks[0]):
+                kırp = 5 if base >= 17 else 3
+                pts['Stepler'] = max(base - kırp, 1)
+                notes.append(f"🔸 Birden çok adım tek step içinde ({pts['Stepler']})")
+                total += pts['Stepler']
             else:
-                if re.search(r'(,|\bve\b|\bsonra\b|\bardından\b)', action, re.I):
-                    kırp = 5 if base >= 17 else 3
-                    pts['Stepler'] = max(base - kırp, 1)
-                    notes.append(f"🔸 Birleşik ama mantıklı ({pts['Stepler']})"); total += pts['Stepler']
-                else:
-                    if len(action.strip()) <= 120:
-                        pts['Stepler'] = base; notes.append("✅ Stepler tek cümle ama okunaklı"); total += base
-                    else:
-                        pts['Stepler'] = max(base - 3, 1)
-                        notes.append(f"🔸 Tek cümlede uzun anlatım ({pts['Stepler']})"); total += pts['Stepler']
+                pts['Stepler'] = base; notes.append("✅ Tek step ama net/tek eylem")
+                total += base
 
     # 6) Client
     if 6 in active:
         ck = ["android","ios","web","mac","windows","chrome","safari"]
-        if any(c in summary.lower() for c in ck) or any(c in (action or "").lower() for c in ck):
+        if any(c in summary.lower() for c in ck) or any(c in all_actions_text.lower() for c in ck):
             pts['Client'] = base; notes.append("✅ Client bilgisi var"); total += base
         else:
             pts['Client'] = 0; notes.append("❌ Client bilgisi eksik")
@@ -364,7 +377,7 @@ def score_one(row):
     return {
         "Key": key, "Summary": summary, "Tablo": table, "Toplam Puan": total,
         **pts, "Açıklama": " | ".join(notes),
-        "_raw_steps": steps_text, "_action": action  # debug amaçlı
+        "_raw_steps": steps_text, "_actions": action_blocks  # debug amaçlı
     }
 
 # ---------- Çalıştır ----------
@@ -467,13 +480,12 @@ if uploaded:
         if show_debug:
             from html import escape
             data_blocks = extract_data_blocks(r["_raw_steps"])
-            data_pretty = " | ".join(escape(b) for b in data_blocks) if data_blocks else "—"
-            action_lines = _split_actions_lines(r["_action"] or "")
-            expected_blocks = extract_expected_blocks(r["_raw_steps"])
-            exp_pretty = " | ".join(escape(b) for b in expected_blocks) if expected_blocks else "—"
-            st.markdown(f"<small><strong>Data Blokları:</strong> {data_pretty}</small>", unsafe_allow_html=True)
-            st.markdown(f"<small><strong>Action satırları:</strong> {escape(str(action_lines))}</small>", unsafe_allow_html=True)
-            st.markdown(f"<small><strong>Expected Blokları:</strong> {exp_pretty}</small>", unsafe_allow_html=True)
+            exp_blocks = extract_expected_blocks(r["_raw_steps"])
+            act_blocks = r["_actions"] or []
+            st.markdown(f"<small><strong>Action blok sayısı:</strong> {len(act_blocks)}</small>", unsafe_allow_html=True)
+            st.markdown(f"<small><strong>Birleşik Action? </strong> {block_has_many_substeps(act_blocks[0]) if len(act_blocks)==1 else False}</small>", unsafe_allow_html=True)
+            st.markdown(f"<small><strong>Data Blokları:</strong> {' | '.join(escape(b) for b in data_blocks) or '—'}</small>", unsafe_allow_html=True)
+            st.markdown(f"<small><strong>Expected Blokları:</strong> {' | '.join(escape(b) for b in exp_blocks) or '—'}</small>", unsafe_allow_html=True)
 
         st.markdown(f"🗒️ **Açıklamalar:** {r['Açıklama']}")
         st.markdown('</div>', unsafe_allow_html=True)
