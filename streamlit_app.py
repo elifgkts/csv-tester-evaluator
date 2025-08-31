@@ -11,8 +11,7 @@ st.title("📋 Test Case Kalite Değerlendirmesi")
 
 st.markdown("""
 Bu uygulama test caseleri **A/B/C/D** tablosuna göre **senaryo içeriğini analiz ederek** otomatik sınıflandırır ve 7 kritere göre puanlar.  
-- **Tablo seçimi:** Summary + Manual Test Steps içeriğinden **gerçekten gerekli** olup olmadığına göre yapılır (etikete bağlı değil).
-- **Data puanı:** Sadece *Manual Test Steps* içinde **`Data:` etiketi** varsa verilir (senin kuralına %100 uyum).
+
 """)
 
 with st.expander("📌 Kurallar (özet)"):
@@ -25,8 +24,6 @@ with st.expander("📌 Kurallar (özet)"):
   - **C:** Data gerekli
   - **D:** Hem data hem önkoşul gerekli
 - **Puanlar:** A=5×20, B=6×17, C=6×17, D=7×14
-- **Step kırıntı kuralı:** Birleşik ama mantıklı gruplanmış adım → kırpılmış puan (10–15 gibi)
-- **Expected/Data değerlendirme:** Yalnızca doğru içerik → puan; zayıf/etiketsiz → 0 ya da kırpılmış.
 """)
 
 colA, colB = st.columns([1,1])
