@@ -3,38 +3,48 @@ import pandas as pd
 import random
 import re
 
-st.set_page_config(page_title="Test Case SLA", layout="wide")
+st.set_page_config(page_title="Test Case SLA", page_icon="📋", layout="wide")
 st.title("📋 Test Case Kalite Değerlendirmesi")
 
 st.markdown("""
-Bu uygulama, test caselerinizi **A, B, C veya D tablosuna** göre değerlendirir.  
+Bu uygulama, test caselerinizi **A, B, C veya D** tablosuna göre değerlendirir.  
 Her test case'in ait olduğu tablo, **senaryo içeriğine göre otomatik belirlenir** ve 7 kritere göre puanlama yapılır.
 """)
 
-# 📌 Kurallar ve Tablo Yapısı
-with st.expander("📌 Değerlendirme Kuralları ve Tablo Açıklamaları"):
+# 🔢 Kurallar ve Tablo Yapısı
+with st.expander("📌 Değerlendirme Kuralları ve Tablo Bilgisi"):
     st.markdown("""
-**CSV formatı:** JIRA'dan export edilen XRAY CSV dosyası `;` (noktalı virgül) ile ayrılmalıdır.
+**CSV formatı:** CSV dosyası `;` (noktalı virgül) ile ayrılmalı.
 
 **Gerekli sütunlar:** `Issue Key`, `Summary`, `Priority`, `Labels`, `Custom field (Manual Test Steps)`
 
-**Tablo Seçimi (Senaryoya göre):**
-- **A Tablosu:** Ne ön koşul ne test datası gerektirmeyen testler (5 kriter)
-- **B Tablosu:** Ön koşul gerekli testler (6 kriter)
-- **C Tablosu:** Test datası gerekli testler (6 kriter)
-- **D Tablosu:** Hem test datası hem ön koşul gerekli (7 kriter)
+### 🧮 Kullanılan Kurallar ve Tablo Seçimi:
+- **A Tablosu**: Veri veya ön koşul gerekmeyen testler. (5 kriter)
+- **B Tablosu**: Sadece ön koşul gereken testler. (6 kriter)
+- **C Tablosu**: Sadece test verisi gereken testler. (6 kriter)
+- **D Tablosu**: Hem ön koşul hem test verisi gereken testler. (7 kriter)
 
-**Kriterler:**
+### 📝 Kriterler:
 1. Test başlığı anlaşılır mı?
 2. Öncelik bilgisi girilmiş mi?
-3. Test datası eklenmiş mi? *(C, D için)*
-4. Test ön koşul eklenmiş mi? *(B, D için)*
-5. Test stepleri var ve doğru ayrıştırılmış mı?
-6. Senaryonun hangi clientta koşulacağı belli mi?
-7. Expected result bulunuyor mu?
+3. Test datası eklenmiş mi? (yalnızca C ve D tablolarında)
+4. Test ön koşul eklenmiş mi? (yalnızca B ve D tablolarında)
+5. Test stepleri var mı ve doğru ayrıştırılmış mı?
+6. Hangi clientta koşulacağı belli mi?
+7. Expected result var mı ve anlamlı mı?
 
-🔎 *Stepler tek adımda yazıldıysa puan kırılır. Expected veya Summary ifadeleri zayıfsa kırık puan verilir.*
+### 🎯 Puanlama:
+- A: 5 kriter × 20 puan = 100 puan
+- B/C: 6 kriter × 17 puan = 102 puan
+- D: 7 kriter × 14 puan = 98 puan
+
+🔴 Eksik kriter varsa puanı **tamamen kırılır (0)**.
+🟠 Step alanı tek bir bloksa ama benzer işlemler birlikteyse: **10 puan kırılır.**
+🟡 Step yerine summary tekrar edildiyse: **1 puan verilir.**
+✅ Step’ler düzgün ayrılmışsa: **tam puan** verilir.
     """)
+
+
 
 # 🎯 Kaç test case değerlendirilecek?
 sample_size = st.slider("📌 Kaç test case örneği değerlendirilsin?", min_value=1, max_value=50, value=5)
