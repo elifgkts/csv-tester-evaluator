@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v2.2
-# - Dark mode uyumlu CSS (prefers-color-scheme)
-# - Data/Precondition gerçek içerik kontrolü (HTML/JSON/blok başlıkları)
+# 📌 Test Case Evaluator v2.3
+# - Dark mode uyumlu CSS
+# - Data/Precondition: gerçek içerik kontrolü (HTML/JSON/blok başlıkları)
 # - Doğru tablo (A/B/C/D) seçimi için sinyal analizi
-# - KPI, tablo, CSV indirme ve Detay Kartları
+# - Stepler: yapılandırma algısı (numaralı/bullet’lı/kısa satırlar) + adil “birleşik” kırpması
+# - KPI, tablo, CSV indirme ve Detay Kartları + isteğe bağlı debug görünümü
 
 import streamlit as st
 import pandas as pd
@@ -103,14 +104,14 @@ with st.expander("📌 Kurallar (özet)"):
 st.sidebar.header("⚙️ Ayarlar")
 sample_size = st.sidebar.slider("Kaç test case değerlendirilsin?", 1, 100, 5)
 fix_seed = st.sidebar.toggle("🔒 Fix seed (deterministik örnekleme)", value=False)
-show_debug = st.sidebar.toggle("🛠 Data Debug (blokları göster)", value=False)
+show_debug = st.sidebar.toggle("🛠 Debug (Data/Action satırları)", value=False)
 if "reroll" not in st.session_state: st.session_state.reroll = 0
 if st.sidebar.button("🎲 Yeniden örnekle"): st.session_state.reroll += 1
 
 uploaded = st.file_uploader("📤 CSV yükle (`;` ayraçlı)", type="csv")
 
 # ---------- Yardımcılar ----------
-def _text(x): 
+def _text(x):
     return str(x or "")
 
 def _match(pattern, text):
@@ -159,7 +160,7 @@ def is_meaningful_data(value: str) -> bool:
     v = value.strip()
     if re.search(r'https?://', v, re.I): return True
     if re.search(r'\b(select|insert|update|delete)\b', v, re.I): return True
-    if re.search(r'\b[a-z_]+\.[a-z_]+\b', v, re.I): return True  # unkapani.video gibi
+    if re.search(r'\b[a-z_]+\.[a-z_]+\b', v, re.I): return True  # tablo.adı sinyali
     if len(re.sub(r'\s+', '', v)) >= 2: return True
     return False
 
@@ -206,7 +207,7 @@ def decide_data_needed(summary: str, steps_text: str) -> bool:
     if has_data_present_for_scoring(steps_text):
         return True
     combined = (summary or "") + "\n" + (steps_text or "")
-    return len(scan_data_signals(combined)) >= 2  # en az iki güçlü sinyal
+    return len(scan_data_signals(combined)) >= 2  # en az iki güçlü sinyal → data gerekli
 
 def decide_precond_needed(summary: str, steps_text: str) -> bool:
     if has_precond_tag_with_value(steps_text):
@@ -221,6 +222,31 @@ def choose_table(summary: str, steps_text: str):
     if data_needed: return "C", 17, [1,2,3,5,6,7]
     if pre_needed: return "B", 17, [1,2,4,5,6,7]
     return "A", 20, [1,2,5,6,7]
+
+# ---- ACTION/STEPLER yapısı ----
+def _split_actions_lines(action_text: str) -> list[str]:
+    """Action alanını potansiyel step satırlarına böler."""
+    t = _cleanup_html(action_text or "")
+    lines = re.split(r'(?:\r?\n)+', t.strip())
+    if len(lines) <= 1:
+        # bazıları ; ile ayırıyor
+        lines = re.split(r'\s*;\s*', t.strip())
+    lines = [ln.strip() for ln in lines if ln and not _is_meaningless(ln)]
+    return lines
+
+def actions_are_well_structured(action_text: str) -> bool:
+    """Gerçekten ayrı ayrı ve okunaklı step’ler var mı?"""
+    lines = _split_actions_lines(action_text)
+    if len(lines) >= 2:
+        numbered_or_bulleted = sum(1 for ln in lines if re.match(r'^(\d+[\).\-\:]|\-|\*|\•)\s+', ln))
+        shortish = sum(1 for ln in lines if len(ln) <= 140)
+        if numbered_or_bulleted >= 1:
+            return True
+        if shortish >= 2:
+            long_joiners = sum(1 for ln in lines if re.search(r'\b(ardından|sonra)\b', ln, re.I))
+            if long_joiners <= len(lines) // 2:
+                return True
+    return False
 
 # ---------- Skorlama ----------
 def score_one(row):
@@ -261,32 +287,44 @@ def score_one(row):
 
     # 4) Ön Koşul
     if 4 in active:
-        if decide_precond_needed(summary, steps_text) and has_precond_tag_with_value(steps_text):
+        # Puan için gerçekten doldurulmuş precondition arıyoruz
+        if has_precond_tag_with_value(steps_text):
             pts['Ön Koşul'] = base; notes.append("✅ Ön koşul belirtilmiş"); total += base
         else:
             pts['Ön Koşul'] = 0; notes.append("❌ Ön koşul eksik")
 
-    # 5) Stepler – kırıntı mantığı
+    # 5) Stepler – önce yapı kontrolü, sonra 'birleşik' fallback
     if 5 in active:
-        if not action.strip():
+        if not (action or "").strip():
             pts['Stepler'] = 0; notes.append("❌ Stepler boş")
-        elif any(x in action for x in [",", " ardından ", " sonra ", " ve "]):
-            kırp = 5 if base >= 17 else 3
-            pts['Stepler'] = max(base - kırp, 1); notes.append(f"🔸 Birleşik ama mantıklı ({pts['Stepler']})"); total += pts['Stepler']
         else:
-            pts['Stepler'] = base; notes.append("✅ Stepler düzgün"); total += base
+            if actions_are_well_structured(action):
+                pts['Stepler'] = base; notes.append("✅ Stepler ayrı ve düzgün"); total += base
+            else:
+                # tek satır ve zincirli eylemler ise kırp
+                if re.search(r'(,|\bve\b|\bsonra\b|\bardından\b)', action, re.I):
+                    kırp = 5 if base >= 17 else 3
+                    pts['Stepler'] = max(base - kırp, 1)
+                    notes.append(f"🔸 Birleşik ama mantıklı ({pts['Stepler']})"); total += pts['Stepler']
+                else:
+                    # ayrı satır yok ama kısa/temizse tam puan
+                    if len(action.strip()) <= 120:
+                        pts['Stepler'] = base; notes.append("✅ Stepler tek cümle ama okunaklı"); total += base
+                    else:
+                        pts['Stepler'] = max(base - 3, 1)
+                        notes.append(f"🔸 Tek cümlede uzun anlatım ({pts['Stepler']})"); total += pts['Stepler']
 
     # 6) Client
     if 6 in active:
         ck = ["android","ios","web","mac","windows","chrome","safari"]
-        if any(c in summary.lower() for c in ck) or any(c in action.lower() for c in ck):
+        if any(c in summary.lower() for c in ck) or any(c in (action or "").lower() for c in ck):
             pts['Client'] = base; notes.append("✅ Client bilgisi var"); total += base
         else:
             pts['Client'] = 0; notes.append("❌ Client bilgisi eksik")
 
     # 7) Expected
     if 7 in active:
-        if not expected.strip():
+        if not (expected or "").strip():
             pts['Expected'] = 0; notes.append("❌ Expected result eksik")
         elif any(w in expected.lower() for w in ["test edilir","kontrol edilir"]):
             pts['Expected'] = max(base-3, 1); notes.append(f"🔸 Expected zayıf ifade ({pts['Expected']})"); total += pts['Expected']
@@ -296,7 +334,7 @@ def score_one(row):
     return {
         "Key": key, "Summary": summary, "Tablo": table, "Toplam Puan": total,
         **pts, "Açıklama": " | ".join(notes),
-        "_raw_steps": steps_text  # debug için
+        "_raw_steps": steps_text, "_action": action  # debug için
     }
 
 # ---------- Çalıştır ----------
@@ -311,7 +349,8 @@ if uploaded:
     except Exception:
         df = pd.read_csv(uploaded)
 
-    sample = df.sample(n=min(sample_size, len(df)), random_state=(123 if fix_seed else None)) if len(df)>0 else df
+    sample = df.sample(n=min(sample_size, len(df)),
+                       random_state=(123 if fix_seed else None)) if len(df)>0 else df
 
     results = sample.apply(score_one, axis=1, result_type='expand')
 
@@ -395,13 +434,13 @@ if uploaded:
             if k in r and pd.notna(r[k]):
                 st.markdown(f"- **{k}**: {int(r[k])} puan")
 
-        # İsteğe bağlı debug: yakalanan data bloklarını göster
         if show_debug:
             from html import escape
-            # orijinal steps’tan blokları çıkar
-            blocks = extract_data_blocks(r["_raw_steps"])
-            pretty = " | ".join(escape(b) for b in blocks) if blocks else "—"
-            st.markdown(f"<small><strong>Data Blokları:</strong> {pretty}</small>", unsafe_allow_html=True)
+            data_blocks = extract_data_blocks(r["_raw_steps"])
+            data_pretty = " | ".join(escape(b) for b in data_blocks) if data_blocks else "—"
+            action_lines = _split_actions_lines(r["_action"] or "")
+            st.markdown(f"<small><strong>Data Blokları:</strong> {data_pretty}</small>", unsafe_allow_html=True)
+            st.markdown(f"<small><strong>Action satırları:</strong> {escape(str(action_lines))}</small>", unsafe_allow_html=True)
 
         st.markdown(f"🗒️ **Açıklamalar:** {r['Açıklama']}")
         st.markdown('</div>', unsafe_allow_html=True)
