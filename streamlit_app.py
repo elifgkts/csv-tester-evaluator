@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v1.7 – PDF çıktısı (ReportLab) + aynı sade UI
+# 📌 Test Case Evaluator v1.6 – UI sade (debug & "neden bu tablo" kaldırıldı)
 import streamlit as st
 import pandas as pd
 import re
 import time
 import random
-from io import BytesIO
-from datetime import datetime
 
 st.set_page_config(page_title="Test Case SLA", layout="wide")
 st.title("📋 Test Case Kalite Değerlendirmesi")
@@ -34,12 +32,8 @@ col1, col2 = st.columns([1,1])
 sample_size = col1.slider("📌 Kaç test case değerlendirilsin?", 1, 100, 5)
 fix_seed = col2.toggle("🔒 Fix seed (deterministik örnekleme)", value=False)
 
-# İsteğe bağlı PDF fontu (Türkçe karakterler için önerilir)
-with st.expander("🅰️ PDF için özel font yükle (opsiyonel)"):
-    font_file = st.file_uploader("Bir .ttf font dosyası yükleyin (öneri: DejaVuSans.ttf)", type=["ttf"])
-
 if "reroll" not in st.session_state:
-    st.session_state.reroll += 0
+    st.session_state.reroll = 0
 if st.button("🎲 Yeniden örnekle"):
     st.session_state.reroll += 1
 
@@ -50,16 +44,19 @@ def _text(x):
     return str(x or "")
 
 def _match(pattern, text):
-    return re.search(pattern, text or "", re.IGNORECASE)
+    return re.search(pattern, text, re.IGNORECASE)
 
 def has_data_tag(steps_text:str) -> bool:
+    # Data PUANLAMA için sadece "Data:" etiketi
     return bool(re.search(r'(?:^|\n|\r)\s*[-\s]*Data\s*:', steps_text or "", re.IGNORECASE))
 
 def extract_first(text, key):
+    # JSON benzeri içerikten "Key": "..." yakala
     m = re.search(rf'"{key}"\s*:\s*"(.*?)"', text or "", re.IGNORECASE | re.DOTALL)
     return m.group(1).strip() if m else ""
 
 def scan_data_signals(text:str):
+    """Data ihtiyacını işaret eden **güçlü** sinyallerin listesi."""
     t = (text or "").lower()
     signals = []
     if _match(r'\b(select|insert|update|delete)\b', t): signals.append("SQL")
@@ -81,10 +78,15 @@ def scan_precond_signals(text:str):
     return signals
 
 def decide_data_needed(summary:str, steps_text:str):
+    """Data gerçekten **gerekli mi?**
+    - Eğer Data: etiketi **veya** Data alanı varsa → doğrudan GEREKLİ.
+    - Aksi halde, güçlü sinyal sayısı ≥ 2 ise GEREKLİ.
+    """
     combined = (summary or "") + "\n" + (steps_text or "")
     data_field = extract_first(steps_text, "Data")
     data_tag = has_data_tag(steps_text)
     signals = scan_data_signals(combined)
+
     if data_tag or (data_field.strip() != ""):
         return True
     return len(set(signals)) >= 2
@@ -95,8 +97,10 @@ def decide_precond_needed(summary:str, steps_text:str):
     return len(set(signals)) >= 1
 
 def choose_table(summary, steps_text):
+    """Tablo seçimi (eşikli, false-positive azaltılmış)."""
     data_needed = decide_data_needed(summary, steps_text)
     pre_needed = decide_precond_needed(summary, steps_text)
+
     if data_needed and pre_needed:
         return "D", 14, [1,2,3,4,5,6,7]
     if data_needed:
@@ -106,6 +110,7 @@ def choose_table(summary, steps_text):
     return "A", 20, [1,2,5,6,7]
 
 def score_one(row):
+    key = _text(row.get('Issue key') or row.get('Issue Key'))
     summary = _text(row.get('Summary'))
     priority = _text(row.get('Priority')).lower()
     steps_text = _text(row.get('Custom field (Manual Test Steps)'))
@@ -174,7 +179,14 @@ def score_one(row):
         else:
             pts['Expected'] = base; notes.append("✅ Expected düzgün"); total += base
 
-    return pts, " | ".join(notes), total
+    return {
+        "Key": key,
+        "Summary": summary,
+        "Tablo": table,
+        "Toplam Puan": total,
+        **pts,
+        "Açıklama": " | ".join(notes),
+    }
 
 # ---------- Çalıştır ----------
 if uploaded:
@@ -184,165 +196,40 @@ if uploaded:
     else:
         random.seed(time.time_ns())
 
-    # CSV oku
+    # CSV oku (önce ; sonra varsayılan)
     try:
         df = pd.read_csv(uploaded, sep=';')
     except Exception:
         df = pd.read_csv(uploaded)
 
-    # Örnekleme
+    # Gerçek rastgele örnekleme
     if len(df) > sample_size:
         idx = random.sample(range(len(df)), sample_size)
         sample = df.iloc[idx].copy()
     else:
         sample = df.copy()
 
-    # Hesapla
-    rows = []
-    for _, row in sample.iterrows():
-        key = _text(row.get('Issue key') or row.get('Issue Key'))
-        summary = _text(row.get('Summary'))
-        pts, notes, total = score_one(row)
-        table = choose_table(summary, _text(row.get('Custom field (Manual Test Steps)')))[0]
-        rows.append({
-            "Key": key,
-            "Summary": summary,
-            "Tablo": table,
-            "Toplam Puan": total,
-            **pts,
-            "Açıklama": notes
-        })
-    results = pd.DataFrame(rows)
+    results = sample.apply(score_one, axis=1, result_type='expand')
 
-    # Dağılım
     st.markdown("### 📈 Tablo Dağılımı")
     dist = results['Tablo'].value_counts().sort_index()
     st.write({k:int(v) for k,v in dist.items()})
 
-    # Tablo
     st.markdown("## 📊 Değerlendirme Tablosu")
     st.dataframe(results.set_index("Key"))
 
-    # --------- PDF oluşturma ---------
-    try:
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib import colors
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.units import mm
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
-    except Exception as e:
-        st.warning("PDF oluşturmak için lütfen şu komutla ReportLab kurun: `pip install reportlab`")
-        st.stop()
-
-    # Font ayarı (opsiyonel .ttf)
-    body_font = "Helvetica"
-    if font_file is not None:
-        try:
-            pdfmetrics.registerFont(TTFont("CustomFont", font_file.read()))
-            body_font = "CustomFont"
-        except Exception:
-            st.info("⚠️ Font kaydedilemedi, Helvetica ile devam ediliyor.")
-
-    # PDF içeriği
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=18*mm, rightMargin=18*mm, topMargin=16*mm, bottomMargin=16*mm)
-
-    styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="H1", fontName=body_font, fontSize=18, leading=22, spaceAfter=8))
-    styles.add(ParagraphStyle(name="H2", fontName=body_font, fontSize=14, leading=18, spaceAfter=6))
-    styles.add(ParagraphStyle(name="P", fontName=body_font, fontSize=10, leading=14))
-    styles.add(ParagraphStyle(name="SMALL", fontName=body_font, fontSize=9, leading=12))
-
-    story = []
-
-    # Kapak
-    story.append(Paragraph("📋 Test Case Kalite Değerlendirmesi", styles["H1"]))
-    date_str = datetime.now().strftime("%d.%m.%Y %H:%M")
-    story.append(Paragraph(f"Tarih: {date_str}", styles["SMALL"]))
-    story.append(Spacer(1, 6))
-
-    # Dağılım özeti
-    story.append(Paragraph("📈 Tablo Dağılımı", styles["H2"]))
-    dist_items = [[Paragraph(k, styles["P"]), Paragraph(str(v), styles["P"])] for k, v in dist.items()]
-    dist_tbl = Table([["Tablo", "Adet"]] + dist_items, colWidths=[25*mm, 25*mm])
-    dist_tbl.setStyle(TableStyle([
-        ("GRID", (0,0), (-1,-1), 0.3, colors.grey),
-        ("BACKGROUND", (0,0), (-1,0), colors.whitesmoke),
-        ("FONTNAME", (0,0), (-1,-1), body_font),
-        ("ALIGN", (1,1), (-1,-1), "RIGHT"),
-    ]))
-    story.append(dist_tbl)
-    story.append(Spacer(1, 10))
-
-    # Skor tablosu (özet)
-    story.append(Paragraph("📊 Değerlendirme Özeti", styles["H2"]))
-    show_cols = ["Key", "Summary", "Tablo", "Toplam Puan"]
-    # Summary metnini kırpmak için
-    def _short(s, n=90):
-        s = _text(s)
-        return s if len(s) <= n else s[:n-1] + "…"
-    table_data = [show_cols] + [[
-        _text(r["Key"]),
-        _short(r["Summary"]),
-        _text(r["Tablo"]),
-        str(int(r["Toplam Puan"])) if pd.notna(r["Toplam Puan"]) else ""
-    ] for _, r in results.iterrows()]
-    widths = [28*mm, 100*mm, 18*mm, 22*mm]
-    t = Table(table_data, colWidths=widths, repeatRows=1)
-    t.setStyle(TableStyle([
-        ("GRID", (0,0), (-1,-1), 0.3, colors.grey),
-        ("BACKGROUND", (0,0), (-1,0), colors.whitesmoke),
-        ("FONTNAME", (0,0), (-1,-1), body_font),
-        ("ALIGN", (-1,1), (-1,-1), "RIGHT"),
-        ("VALIGN", (0,0), (-1,-1), "TOP"),
-    ]))
-    story.append(t)
-    story.append(Spacer(1, 10))
-
-    # Ayrıntılar (her test)
-    for i, r in results.iterrows():
-        story.append(Paragraph(f"🔍 {r['Key']} – {r['Summary']}", styles["H2"]))
-        story.append(Paragraph(f"Tablo: <b>{r['Tablo']}</b> &nbsp;&nbsp; Toplam Puan: <b>{int(r['Toplam Puan']) if pd.notna(r['Toplam Puan']) else 0}</b>", styles["P"]))
-        # Kriter tablosu
-        kriterler = ['Başlık','Öncelik','Data','Ön Koşul','Stepler','Client','Expected']
-        k_rows = [["Kriter", "Puan"]] + [[k, str(int(r[k])) if k in r and pd.notna(r[k]) else ""] for k in kriterler]
-        kt = Table(k_rows, colWidths=[50*mm, 20*mm])
-        kt.setStyle(TableStyle([
-            ("GRID", (0,0), (-1,-1), 0.3, colors.grey),
-            ("BACKGROUND", (0,0), (-1,0), colors.whitesmoke),
-            ("FONTNAME", (0,0), (-1,-1), body_font),
-            ("ALIGN", (1,1), (1,-1), "RIGHT"),
-        ]))
-        story.append(kt)
-        story.append(Spacer(1, 4))
-        # Açıklama
-        story.append(Paragraph("🗒️ Açıklamalar:", styles["P"]))
-        story.append(Paragraph(_text(r["Açıklama"]), styles["SMALL"]))
-        # Sayfa dolduysa otomatik bölünsün
-        story.append(Spacer(1, 8))
-
-        # Ara ara sayfa kır
-        if (i+1) % 4 == 0:
-            story.append(PageBreak())
-
-    doc.build(story)
-
-    pdf_bytes = buffer.getvalue()
-    buffer.close()
-
     st.download_button(
-        "📄 PDF indir",
-        data=pdf_bytes,
-        file_name=f"testcase_degerlendirme_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-        mime="application/pdf"
+        "📥 Sonuçları CSV olarak indir",
+        data=results.to_csv(index=False, sep=';', encoding='utf-8'),
+        file_name="testcase_skorlari.csv",
+        mime="text/csv"
     )
 
-    # (İstersen kalsın diye CSV butonunu da gösterebilirim; dilersen kaldırabiliriz.)
-    # st.download_button(
-    #     "📥 CSV indir",
-    #     data=results.to_csv(index=False, sep=';', encoding='utf-8'),
-    #     file_name="testcase_skorlari.csv",
-    #     mime="text/csv"
-    # )
+    st.markdown("## 📝 Detaylar")
+    for _, r in results.iterrows():
+        st.markdown(f"### 🔍 {r['Key']} | {r['Summary']}")
+        st.markdown(f"**Tablo:** `{r['Tablo']}` • **Toplam:** `{r['Toplam Puan']}`")
+        for k in ['Başlık','Öncelik','Data','Ön Koşul','Stepler','Client','Expected']:
+            if k in r and pd.notna(r[k]):
+                st.markdown(f"- **{k}**: {int(r[k])} puan")
+        st.markdown(f"🗒️ **Açıklamalar:** {r['Açıklama']}")
