@@ -11,8 +11,7 @@ st.title("📋 Test Case Kalite Değerlendirmesi")
 
 st.markdown("""
 Bu uygulama test caseleri **A/B/C/D** tablosuna göre **senaryo içeriğini analiz ederek** otomatik sınıflandırır ve 7 kritere göre puanlar.
-- **Data puanı:** Sadece *Manual Test Steps* içinde **`Data:`** etiketi varsa verilir.
-- **Tablo seçimi:** Gerçekten **data/önkoşul gereksinimi** var mı diye içerik sinyallerine bakılır (etiket bağımsız).
+- **Tablo seçimi:** Gerçekten **data/önkoşul gereksinimi** var mı diye içerik sinyallerine bakılır.
 """)
 
 with st.expander("📌 Kurallar (özet)"):
