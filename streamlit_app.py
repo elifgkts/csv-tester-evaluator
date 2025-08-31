@@ -1,52 +1,99 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v1.2 – Data kriteri katı doğrulama ("Data:" şart)
+# 📌 Test Case Evaluator v1.3 – Doğru tablo seçimi + gerçek rastgele örnekleme
 import streamlit as st
 import pandas as pd
 import re
+import time
+import random
 
 st.set_page_config(page_title="Test Case SLA", layout="wide")
 st.title("📋 Test Case Kalite Değerlendirmesi")
 
 st.markdown("""
-Bu uygulama test caseleri **A/B/C/D** tablosuna göre otomatik sınıflandırır ve 7 kriter üzerinden puanlar.  
-**Data** kriteri, yalnızca **`Custom field (Manual Test Steps)` içinde `Data:` etiketi** varsa puanlanır.
+Bu uygulama test caseleri **A/B/C/D** tablosuna göre **senaryo içeriğini analiz ederek** otomatik sınıflandırır ve 7 kritere göre puanlar.  
+- **Tablo seçimi:** Summary + Manual Test Steps içeriğinden **gerçekten gerekli** olup olmadığına göre yapılır (etikete bağlı değil).
+- **Data puanı:** Sadece *Manual Test Steps* içinde **`Data:` etiketi** varsa verilir (senin kuralına %100 uyum).
 """)
 
 with st.expander("📌 Kurallar (özet)"):
     st.markdown("""
 - **CSV ayraç:** `;`
-- **Sütunlar:** `Issue key`, `Summary`, `Priority`, `Labels`, `Custom field (Manual Test Steps)`
-- **Tablo seçimi (senaryoya göre):**
-  - A: Data da precondition da gerekmiyor
-  - B: Precondition gerekli
-  - C: Data gerekli
-  - D: Hem data hem precondition gerekli
-- **Puanlar:** A=5×20, B=6×17, C=6×17, D=7×14  
-- **Data kuralı:** Sadece *Manual Test Steps* alanında **`Data:`** etiketi geçerse **var** kabul edilir.
+- **Gerekli sütunlar:** `Issue key` (veya `Issue Key`), `Summary`, `Priority`, `Labels`, `Custom field (Manual Test Steps)`
+- **Tablo mantığı (senaryoya göre):**
+  - **A:** Data da önkoşul da gerekmiyor
+  - **B:** Önkoşul gerekli
+  - **C:** Data gerekli
+  - **D:** Hem data hem önkoşul gerekli
+- **Puanlar:** A=5×20, B=6×17, C=6×17, D=7×14
+- **Step kırıntı kuralı:** Birleşik ama mantıklı gruplanmış adım → kırpılmış puan (10–15 gibi)
+- **Expected/Data değerlendirme:** Yalnızca doğru içerik → puan; zayıf/etiketsiz → 0 ya da kırpılmış.
 """)
 
-sample_size = st.slider("📌 Kaç test case değerlendirilsin?", 1, 50, 5)
+colA, colB = st.columns([1,1])
+sample_size = colA.slider("📌 Kaç test case değerlendirilsin?", 1, 100, 5)
+fix_seed = colB.toggle("🔒 Fix seed (deterministik örnekleme)", value=False)
+if "reroll" not in st.session_state:
+    st.session_state.reroll = 0
+if st.button("🎲 Yeniden örnekle"):
+    st.session_state.reroll = st.session_state.reroll + 1
+
 uploaded = st.file_uploader("📤 CSV yükle (`;` ayraçlı)", type="csv")
 
 # ---------- Yardımcılar ----------
+def _text(x): 
+    return str(x or "")
+
+def has_data_signal(text):
+    """
+    Senaryonun DATA gerektirdiğine işaret eden güçlü sinyaller:
+    - SQL: select/insert/update/delete
+    - API/JSON: payload/body/json/headers, {} veya : ile key:value şablonları
+    - Kimlik bilgileri/kimlikler: token/msisdn/iban/imei/email/username/password
+    - Değişken placeholder: <...> veya {...}
+    """
+    t = text.lower()
+    sql = re.search(r'\b(select|insert|update|delete)\b', t)
+    api = re.search(r'\b(json|payload|body|headers|authorization|bearer|content-type)\b', t)
+    ids = re.search(r'\b(msisdn|token|iban|imei|email|username|password|session|otp|验证码|auth)\b', t)
+    keyvals = re.search(r'\b\w+\s*:\s*[^:\n]+', t)  # key: value
+    placeholders = re.search(r'<[^>]+>|\{[^}]+\}', t)
+    numbers_like = re.search(r'\b\d{10,}\b', t)  # uzun sayılar (msisdn vb)
+    return any([sql, api, ids, keyvals, placeholders, numbers_like])
+
+def has_data_tag(steps_text):
+    # Data PUANLAMA için sadece "Data:" etiketi geçerli
+    return bool(re.search(r'(?:^|\n|\r)\s*[-\s]*Data\s*:', steps_text, re.IGNORECASE))
+
+def has_precondition_signal(text):
+    """
+    Önkoşul gereksinimini belirleyen sinyaller:
+    - "Precondition", "Ön Koşul", "Given ... already"
+    - Giriş/abonelik/ürün varlığı vb: login/giriş yapmış, aboneliği var, kullanıcı mevcut
+    - Ortam/ayar: feature flag/seed/setup/config done
+    """
+    t = text.lower()
+    explicit = re.search(r'\bprecondition\b|ön\s*koşul|given .*already', t)
+    login = re.search(r'\b(logged in|login|giriş yap(mış|ın)|authenticated|auth)\b', t)
+    subscription = re.search(r'\b(subscription|abonelik)\b.*\b(aktif|var|existing)\b', t)
+    user_exists = re.search(r'\bexisting user|mevcut kullanıcı\b', t)
+    env = re.search(r'\b(seed|setup|config(ure|)|feature flag|whitelist|allowlist|role|permission)\b', t)
+    return any([explicit, login, subscription, user_exists, env])
+
 def extract_first(text, key):
-    # JSON benzeri içerikte "Key": "..." desenini yakalar (esnek, çok satırlı)
+    # JSON benzeri içerikten "Key": "..." yakala
     m = re.search(rf'"{key}"\s*:\s*"(.*?)"', text, re.IGNORECASE | re.DOTALL)
     return m.group(1).strip() if m else ""
 
-def has_data_tag(steps_text):
-    # Sadece Manual Test Steps alanında "Data:" etiketi var mı?
-    return bool(re.search(r'(?:^|\n|\r)\s*[-\s]*Data\s*:', steps_text, re.IGNORECASE))
-
-def has_precondition(steps_text, labels_text):
-    return ('precond' in labels_text.lower()
-            or bool(re.search(r'\bprecondition\b|\bön\s*koşul\b', steps_text, re.IGNORECASE)))
-
-def choose_table(steps_text, labels_text):
-    data_needed = has_data_tag(steps_text) or bool(
-        re.search(r'\b(msisdn|token|auth|payload|account|config)\b', steps_text, re.IGNORECASE)
-    )
-    precond_needed = has_precondition(steps_text, labels_text)
+def choose_table(summary, steps_text):
+    """
+    Tablo seçimi senaryonun GERÇEKTEN ne gerektirdiğine göre:
+      - data_needed: içerikte data sinyali (SQL/JSON/placeholder/kimlikler...)
+      - precond_needed: içerikte önkoşul sinyali (login/Precondition/...).
+    Not: Data puanlaması yine sadece "Data:" etiketi ile yapılır.
+    """
+    combined = (summary + "\n" + steps_text)
+    data_needed = has_data_signal(combined)
+    precond_needed = has_precondition_signal(combined)
     if data_needed and precond_needed:
         return "D", 14, [1,2,3,4,5,6,7]
     if data_needed:
@@ -56,18 +103,18 @@ def choose_table(steps_text, labels_text):
     return "A", 20, [1,2,5,6,7]
 
 def score_one(row):
-    key = str(row.get('Issue key') or row.get('Issue Key') or "").strip()
-    summary = str(row.get('Summary') or "").strip()
-    priority = str(row.get('Priority') or "").strip().lower()
-    labels = str(row.get('Labels') or "")
-    steps_text = str(row.get('Custom field (Manual Test Steps)') or "")
+    key = _text(row.get('Issue key') or row.get('Issue Key'))
+    summary = _text(row.get('Summary'))
+    priority = _text(row.get('Priority')).lower()
+    steps_text = _text(row.get('Custom field (Manual Test Steps)'))
+    labels = _text(row.get('Labels'))  # sadece ek sinyal olarak; karar verici değil
 
-    # Ham alanlardan örnek birer Action/Data/Expected çek (gösterim için değil, kontroller için)
     action = extract_first(steps_text, "Action")
     data_val = extract_first(steps_text, "Data")
     expected = extract_first(steps_text, "Expected Result")
 
-    table, base, active = choose_table(steps_text, labels)
+    table, base, active = choose_table(summary, steps_text)
+
     pts, notes, total = {}, [], 0
 
     # 1) Başlık
@@ -86,22 +133,21 @@ def score_one(row):
         else:
             pts['Öncelik'] = base; notes.append("✅ Öncelik var"); total += base
 
-    # 3) Data  ➜ SADECE "Data:" etiketi varsa puan
+    # 3) Data – sadece "Data:" etiketi varsa puan
     if 3 in active:
-        data_present = has_data_tag(steps_text)
-        if data_present:
+        if has_data_tag(steps_text):
             pts['Data'] = base; notes.append("✅ `Data:` etiketi var"); total += base
         else:
             pts['Data'] = 0; notes.append("❌ `Data:` etiketi yok (0)")
 
     # 4) Ön Koşul
     if 4 in active:
-        if has_precondition(steps_text, labels):
-            pts['Ön Koşul'] = base; notes.append("✅ Ön koşul belirtilmiş"); total += base
+        if has_precondition_signal(summary + "\n" + steps_text):
+            pts['Ön Koşul'] = base; notes.append("✅ Ön koşul belirtilmiş/ima edilmiş"); total += base
         else:
             pts['Ön Koşul'] = 0; notes.append("❌ Ön koşul eksik")
 
-    # 5) Stepler (ayrıştırma kalitesi – kırıntı kuralı)
+    # 5) Stepler – kırıntı mantığı
     if 5 in active:
         if not action.strip():
             pts['Stepler'] = 0; notes.append("❌ Stepler boş")
@@ -113,7 +159,7 @@ def score_one(row):
 
     # 6) Client
     if 6 in active:
-        ck = ["android","ios","web","mac","windows"]
+        ck = ["android","ios","web","mac","windows","chrome","safari"]
         if any(c in summary.lower() for c in ck) or any(c in action.lower() for c in ck):
             pts['Client'] = base; notes.append("✅ Client bilgisi var"); total += base
         else:
@@ -134,24 +180,49 @@ def score_one(row):
         "Tablo": table,
         "Toplam Puan": total,
         **pts,
-        "Açıklama": " | ".join(notes)
+        "Açıklama": " | ".join(notes),
+        # Ham içerikleri saklıyoruz ama göstermiyoruz
+        "_Action_raw": action, "_Data_raw": data_val, "_Expected_raw": expected
     }
 
+# ---------- Çalıştır ----------
 if uploaded:
+    # seed yönetimi (deterministik istenirse)
+    if fix_seed:
+        random.seed(20250831 + st.session_state.reroll)
+    else:
+        random.seed(time.time_ns())
+
+    # CSV oku (önce ; sonra varsayılan)
     try:
         df = pd.read_csv(uploaded, sep=';')
     except Exception:
-        df = pd.read_csv(uploaded)  # son çare
+        df = pd.read_csv(uploaded)
 
-    sample = df.sample(n=sample_size, random_state=42) if len(df) >= sample_size else df.copy()
+    # Gerçek rastgele örnekleme
+    if len(df) > sample_size:
+        idx = random.sample(range(len(df)), sample_size)
+        sample = df.iloc[idx].copy()
+    else:
+        sample = df.copy()
+
     results = sample.apply(score_one, axis=1, result_type='expand')
 
+    # Ham alanları çıkar, sadece skorları göster
+    hide_cols = ["_Action_raw","_Data_raw","_Expected_raw"]
+    show_df = results.drop(columns=hide_cols, errors="ignore").copy()
+
+    # Dağılım özeti
+    dist = show_df['Tablo'].value_counts().sort_index()
+    st.markdown("### 📈 Tablo Dağılımı")
+    st.write({k:int(v) for k,v in dist.items()})
+
     st.markdown("## 📊 Değerlendirme Tablosu")
-    st.dataframe(results.set_index("Key"))
+    st.dataframe(show_df.set_index("Key"))
 
     st.download_button(
         "📥 Sonuçları CSV olarak indir",
-        data=results.to_csv(index=False, sep=';', encoding='utf-8'),
+        data=show_df.to_csv(index=False, sep=';', encoding='utf-8'),
         file_name="testcase_skorlari.csv",
         mime="text/csv"
     )
