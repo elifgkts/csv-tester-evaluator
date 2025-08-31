@@ -35,40 +35,75 @@ st.set_page_config(page_title="Test Case SLA", layout="wide")
 
 CUSTOM_CSS = """
 <style>
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-.app-hero {
+:root{
+  --bg-card:#ffffff;
+  --text-strong:#0f172a;   /* başlık/metin koyu tema yokken */
+  --text-soft:#475569;
+  --text-sub:#64748b;
+  --border:rgba(2,6,23,0.08);
+
+  --badge-a-bg:#eef2ff; --badge-a-fg:#3730a3; --badge-a-bd:#c7d2fe;
+  --badge-b-bg:#ecfeff; --badge-b-fg:#155e75; --badge-b-bd:#a5f3fc;
+  --badge-c-bg:#fef9c3; --badge-c-fg:#854d0e; --badge-c-bd:#fde68a;
+  --badge-d-bg:#fee2e2; --badge-d-fg:#991b1b; --badge-d-bd:#fecaca;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg-card:#0b1220;
+    --text-strong:#e5ecff; /* başlık/metin koyu temada açık olsun */
+    --text-soft:#c7d2fe;
+    --text-sub:#94a3b8;
+    --border:rgba(148,163,184,0.25);
+
+    --badge-a-bg:#1e1b4b; --badge-a-fg:#c7d2fe; --badge-a-bd:#3730a3;
+    --badge-b-bg:#083344; --badge-b-fg:#99f6e4; --badge-b-bd:#155e75;
+    --badge-c-bg:#3f3f1e; --badge-c-fg:#fde68a; --badge-c-bd:#854d0e;
+    --badge-d-bg:#431313; --badge-d-fg:#fecaca; --badge-d-bd:#991b1b;
+  }
+}
+
+/* Streamlit header/text vars */
+#MainMenu, footer {visibility:hidden;}
+.app-hero{
   background: linear-gradient(135deg, #1f6feb 0%, #0ea5e9 100%);
-  color: white; padding: 18px 22px; border-radius: 14px; margin-bottom: 18px;
-  box-shadow: 0 8px 24px rgba(2, 6, 23, 0.18);
+  color: white; padding:18px 22px; border-radius:14px; margin-bottom:18px;
+  box-shadow:0 8px 24px rgba(2, 6, 23, 0.18);
 }
-.app-hero h1 { font-size: 24px; margin: 0 0 6px 0; line-height: 1.2; }
-.app-hero p { margin: 0; opacity: 0.95; }
-.kpi {
-  border-radius: 14px; padding: 14px; background: #fff;
-  border: 1px solid rgba(2,6,23,0.06); box-shadow: 0 4px 16px rgba(2,6,23,0.06);
+.app-hero h1{ font-size:24px; margin:0 0 6px 0; line-height:1.2; color:white; }
+.app-hero p{ margin:0; opacity:.95; color:white; }
+
+.kpi{
+  border-radius:14px; padding:14px; background:var(--bg-card);
+  border:1px solid var(--border); box-shadow:0 4px 16px rgba(2,6,23,0.06);
 }
-.kpi .kpi-title { font-size: 12px; color: #475569; margin-bottom: 6px; }
-.kpi .kpi-value { font-size: 20px; font-weight: 700; color: #0f172a; }
-.kpi .kpi-sub { font-size: 12px; color: #64748b; }
-.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px;
-  border: 1px solid rgba(2,6,23,0.08); background: #f8fafc; color: #0f172a; }
-.badge-a { background: #eef2ff; color: #3730a3; border-color: #c7d2fe; }
-.badge-b { background: #ecfeff; color: #155e75; border-color: #a5f3fc; }
-.badge-c { background: #fef9c3; color: #854d0e; border-color: #fde68a; }
-.badge-d { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
-.case-card {
-  border-radius: 14px; padding: 14px 16px; background: #fff;
-  border: 1px solid rgba(2,6,23,0.06); box-shadow: 0 6px 24px rgba(2,6,23,0.06);
-  margin-bottom: 14px;
+.kpi .kpi-title{ font-size:12px; color:var(--text-sub); margin-bottom:6px; }
+.kpi .kpi-value{ font-size:20px; font-weight:700; color:var(--text-strong); }
+.kpi .kpi-sub{ font-size:12px; color:var(--text-sub); }
+
+.badge{ display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px;
+  border:1px solid var(--border); background:#f8fafc; color:var(--text-strong); }
+.badge-a{ background:var(--badge-a-bg); color:var(--badge-a-fg); border-color:var(--badge-a-bd);}
+.badge-b{ background:var(--badge-b-bg); color:var(--badge-b-fg); border-color:var(--badge-b-bd);}
+.badge-c{ background:var(--badge-c-bg); color:var(--badge-c-fg); border-color:var(--badge-c-bd);}
+.badge-d{ background:var(--badge-d-bg); color:var(--badge-d-fg); border-color:var(--badge-d-bd);}
+
+.case-card{
+  border-radius:14px; padding:14px 16px; background:var(--bg-card);
+  border:1px solid var(--border); box-shadow:0 6px 24px rgba(2,6,23,0.06);
+  margin-bottom:14px;
 }
-.case-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  border-bottom: 1px dashed rgba(2,6,23,0.08); padding-bottom: 8px; margin-bottom: 8px; }
-.case-title { font-weight: 700; color: #0f172a; }
-.case-meta { font-size: 12px; color: #475569; }
-.hr-soft { border: none; border-top: 1px dashed rgba(2,6,23,0.08); margin: 8px 0; }
+.case-head{ display:flex; align-items:center; justify-content:space-between; gap:8px;
+  border-bottom:1px dashed var(--border); padding-bottom:8px; margin-bottom:8px; }
+.case-title{ font-weight:700; color:var(--text-strong); }
+.case-meta{ font-size:12px; color:var(--text-soft); }
+.hr-soft{ border:none; border-top:1px dashed var(--border); margin:8px 0; }
+
+/* Genel başlık/metin renkleri */
+h1,h2,h3,h4,h5,h6, .stMarkdown p, .stMarkdown li{ color:var(--text-strong) !important; }
+small, .help, .hint{ color:var(--text-sub) !important; }
 </style>
 """
+
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 st.markdown(f"""
