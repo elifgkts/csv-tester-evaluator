@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v1.4 – Tablo seçimi gerekçesi eklendi
+# 📌 Test Case Evaluator v1.5 – "Hepsi C olmasın" fix + açıklamalı gerekçe + debug
 import streamlit as st
 import pandas as pd
 import re
@@ -11,6 +11,8 @@ st.title("📋 Test Case Kalite Değerlendirmesi")
 
 st.markdown("""
 Bu uygulama test caseleri **A/B/C/D** tablosuna göre **senaryo içeriğini analiz ederek** otomatik sınıflandırır ve 7 kritere göre puanlar.
+- **Data puanı:** Sadece *Manual Test Steps* içinde **`Data:`** etiketi varsa verilir (değerlendirme kriteri).
+- **Tablo seçimi:** Gerçekten **data/önkoşul gereksinimi** var mı diye içerik sinyallerine bakılır (etiket bağımsız).
 """)
 
 with st.expander("📌 Kurallar (özet)"):
@@ -23,16 +25,18 @@ with st.expander("📌 Kurallar (özet)"):
   - **C:** Data gerekli
   - **D:** Hem data hem önkoşul gerekli
 - **Puanlar:** A=5×20, B=6×17, C=6×17, D=7×14
-- **Data puanı:** Yalnızca *Manual Test Steps* içinde **`Data:`** etiketi varsa verilir.
+- **Step kırıntı kuralı:** Birleşik ama mantıklı gruplanmış adım → kırpılmış puan (10–15 gibi)
 """)
 
-colA, colB = st.columns([1,1])
-sample_size = colA.slider("📌 Kaç test case değerlendirilsin?", 1, 100, 5)
-fix_seed = colB.toggle("🔒 Fix seed (deterministik örnekleme)", value=False)
+top1, top2, top3 = st.columns([1,1,1])
+sample_size = top1.slider("📌 Kaç test case değerlendirilsin?", 1, 100, 5)
+fix_seed = top2.toggle("🔒 Fix seed (deterministik örnekleme)", value=False)
+debug_mode = top3.toggle("🧪 Sınıflandırma debug bilgisi", value=False)
+
 if "reroll" not in st.session_state:
     st.session_state.reroll = 0
 if st.button("🎲 Yeniden örnekle"):
-    st.session_state.reroll = st.session_state.reroll + 1
+    st.session_state.reroll += 1
 
 uploaded = st.file_uploader("📤 CSV yükle (`;` ayraçlı)", type="csv")
 
@@ -43,25 +47,40 @@ def _text(x):
 def _match(pattern, text):
     return re.search(pattern, text, re.IGNORECASE)
 
-def scan_data_signals(text):
-    """Data ihtiyacını işaret eden sinyalleri liste olarak döndür."""
-    t = text.lower()
+def has_data_tag(steps_text:str) -> bool:
+    # Data PUANLAMA için sadece "Data:" etiketi
+    return bool(re.search(r'(?:^|\n|\r)\s*[-\s]*Data\s*:', steps_text or "", re.IGNORECASE))
+
+def extract_first(text, key):
+    # JSON benzeri içerikten "Key": "..." yakala
+    m = re.search(rf'"{key}"\s*:\s*"(.*?)"', text or "", re.IGNORECASE | re.DOTALL)
+    return m.group(1).strip() if m else ""
+
+def scan_data_signals(text:str):
+    """Data ihtiyacını işaret eden **güçlü** sinyallerin listesi."""
+    t = (text or "").lower()
     signals = []
-    if _match(r'\b(select|insert|update|delete)\b', t): signals.append("SQL")
-    if _match(r'\b(json|payload|body|headers|authorization|bearer|content-type)\b', t): signals.append("API/JSON")
-    if _match(r'\b(msisdn|token|iban|imei|email|username|password|session|otp|auth)\b', t): signals.append("Kimlik/Token")
-    if _match(r'\b\w+\s*:\s*[^:\n]+', t): signals.append("key:value")
-    if _match(r'<[^>]+>|\{[^}]+\}', t): signals.append("placeholder")
-    if _match(r'\b\d{10,}\b', t): signals.append("uzun sayı")
+    # 1) SQL anahtarları
+    if _match(r'\b(select|insert|update|delete)\b', t):
+        signals.append("SQL")
+    # 2) JSON body: hem json/body/payload geçsin, hem de tipik "key":"value" deseni olsun
+    if _match(r'\b(json|payload|body|request|response|headers|content-type)\b', t) and _match(r'"\w+"\s*:\s*".+?"', t):
+        signals.append("JSON body")
+    # 3) Kimlik/alan adları (net data bağımlılığı)
+    if _match(r'\b(msisdn|token|iban|imei|email|username|password|user[_\-]?id|subscriber)\b', t):
+        signals.append("Kimlik alanı")
+    # 4) POST/PUT/PATCH + body/payload birlikte
+    if _match(r'\b(post|put|patch)\b', t) and _match(r'\b(body|payload)\b', t):
+        signals.append("POST payload")
+    # 5) Bilinen placeholder'lar (yalnız bilinen alan adlarıyla)
+    if _match(r'<\s*(msisdn|token|iban|imei|email|username|password|user[_\-]?id)\s*>', t) or \
+       _match(r'\{\s*(msisdn|token|iban|imei|email|username|password|user[_\-]?id)\s*\}', t):
+        signals.append("Placeholder(ID)")
     return signals
 
-def has_data_tag(steps_text):
-    # Data PUANLAMA için sadece "Data:" etiketi geçerli
-    return bool(re.search(r'(?:^|\n|\r)\s*[-\s]*Data\s*:', steps_text, re.IGNORECASE))
-
-def scan_precond_signals(text):
-    """Önkoşul ihtiyacını işaret eden sinyalleri liste olarak döndür."""
-    t = text.lower()
+def scan_precond_signals(text:str):
+    """Önkoşul ihtiyacını işaret eden sinyallerin listesi."""
+    t = (text or "").lower()
     signals = []
     if _match(r'\bprecondition\b|ön\s*koşul|given .*already', t): signals.append("Precondition ifadesi")
     if _match(r'\b(logged in|login|giriş yap(mış|ın)|authenticated|auth)\b', t): signals.append("Login/Auth")
@@ -70,46 +89,49 @@ def scan_precond_signals(text):
     if _match(r'\b(seed|setup|config(ure|)|feature flag|whitelist|allowlist|role|permission)\b', t): signals.append("Ortam/Ayar/Yetki")
     return signals
 
-def extract_first(text, key):
-    # JSON benzeri içerikten "Key": "..." yakala
-    m = re.search(rf'"{key}"\s*:\s*"(.*?)"', text, re.IGNORECASE | re.DOTALL)
-    return m.group(1).strip() if m else ""
-
-def choose_table(summary, steps_text):
-    """
-    Tablo seçimi + gerekçe:
-    - data_signals / precond_signals listeleri oluşturulur.
-    - Var/yok durumuna göre A/B/C/D belirlenir.
-    - 'reason' metni sinyallerle birlikte oluşturulur.
+def decide_data_needed(summary:str, steps_text:str):
+    """Data gerçekten **gerekli mi?**
+    - Eğer Data: etiketi **veya** Data alanı varsa → doğrudan GEREKLİ.
+    - Aksi halde, güçlü sinyal sayısı ≥ 2 ise GEREKLİ (tek sinyal yetmez).
     """
     combined = (summary or "") + "\n" + (steps_text or "")
-    data_signals = scan_data_signals(combined)
-    precond_signals = scan_precond_signals(combined)
+    data_field = extract_first(steps_text, "Data")
+    data_tag = has_data_tag(steps_text)
+    signals = scan_data_signals(combined)
 
-    data_needed = len(data_signals) > 0
-    precond_needed = len(precond_signals) > 0
+    # Güçlü doğrudan göstergeler
+    if data_tag or (data_field.strip() != ""):
+        return True, ["DataTag/Field"] + signals, 999  # 999 = doğrudan gerekli
 
-    if data_needed and precond_needed:
+    # Eşik: en az 2 farklı güçlü sinyal
+    score = len(set(signals))
+    return score >= 2, signals, score
+
+def decide_precond_needed(summary:str, steps_text:str):
+    combined = (summary or "") + "\n" + (steps_text or "")
+    signals = scan_precond_signals(combined)
+    score = len(set(signals))
+    return score >= 1, signals, score
+
+def choose_table(summary, steps_text):
+    """Tablo + gerekçe üretimi (eşikli, false-positive azaltılmış)."""
+    data_needed, data_signals, data_score = decide_data_needed(summary, steps_text)
+    pre_needed, pre_signals, pre_score = decide_precond_needed(summary, steps_text)
+
+    if data_needed and pre_needed:
         table, base, active = "D", 14, [1,2,3,4,5,6,7]
     elif data_needed:
         table, base, active = "C", 17, [1,2,3,5,6,7]
-    elif precond_needed:
+    elif pre_needed:
         table, base, active = "B", 17, [1,2,4,5,6,7]
     else:
         table, base, active = "A", 20, [1,2,5,6,7]
 
-    reason_parts = []
-    if data_needed:
-        reason_parts.append(f"Data sinyalleri: {', '.join(data_signals)}")
-    else:
-        reason_parts.append("Data sinyali yok")
-    if precond_needed:
-        reason_parts.append(f"Önkoşul sinyalleri: {', '.join(precond_signals)}")
-    else:
-        reason_parts.append("Önkoşul sinyali yok")
-
-    reason = " | ".join(reason_parts)
-    return table, base, active, reason
+    # Gerekçe metni
+    data_part = f"Data: {'GEREKLİ' if data_needed else 'gereksiz'} (sinyal sayısı={data_score}; {', '.join(data_signals) or '—'})"
+    pre_part  = f"Önkoşul: {'GEREKLİ' if pre_needed else 'gereksiz'} (sinyal sayısı={pre_score}; {', '.join(pre_signals) or '—'})"
+    reason = f"{data_part} | {pre_part}"
+    return table, base, active, reason, (data_needed, data_signals, data_score), (pre_needed, pre_signals, pre_score)
 
 def score_one(row):
     key = _text(row.get('Issue key') or row.get('Issue Key'))
@@ -120,7 +142,7 @@ def score_one(row):
     action = extract_first(steps_text, "Action")
     expected = extract_first(steps_text, "Expected Result")
 
-    table, base, active, reason = choose_table(summary, steps_text)
+    table, base, active, reason, data_dbg, pre_dbg = choose_table(summary, steps_text)
 
     pts, notes, total = {}, [], 0
 
@@ -149,7 +171,7 @@ def score_one(row):
 
     # 4) Ön Koşul
     if 4 in active:
-        precond_present = len(scan_precond_signals(summary + "\n" + steps_text)) > 0
+        precond_present = decide_precond_needed(summary, steps_text)[0]
         if precond_present:
             pts['Ön Koşul'] = base; notes.append("✅ Ön koşul belirtilmiş/ima edilmiş"); total += base
         else:
@@ -182,7 +204,7 @@ def score_one(row):
         else:
             pts['Expected'] = base; notes.append("✅ Expected düzgün"); total += base
 
-    return {
+    out = {
         "Key": key,
         "Summary": summary,
         "Tablo": table,
@@ -191,6 +213,10 @@ def score_one(row):
         **pts,
         "Açıklama": " | ".join(notes),
     }
+    if debug_mode:
+        out["__Data_debug__"] = f"{data_dbg}"
+        out["__Pre_debug__"] = f"{pre_dbg}"
+    return out
 
 # ---------- Çalıştır ----------
 if uploaded:
@@ -234,6 +260,8 @@ if uploaded:
         st.markdown(f"### 🔍 {r['Key']} | {r['Summary']}")
         st.markdown(f"**Tablo:** `{r['Tablo']}` • **Toplam:** `{r['Toplam Puan']}`")
         st.markdown(f"**Neden bu tablo?** {r['Tablo Gerekçesi']}")
+        if debug_mode:
+            st.code(f"DATA_DEBUG = {r.get('__Data_debug__','')}\nPRE_DEBUG  = {r.get('__Pre_debug__','')}")
         for k in ['Başlık','Öncelik','Data','Ön Koşul','Stepler','Client','Expected']:
             if k in r and pd.notna(r[k]):
                 st.markdown(f"- **{k}**: {int(r[k])} puan")
