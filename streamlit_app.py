@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v2.9.7
+# 📌 Test Case Evaluator v2.9.8
 # - Tablo (A/B/C/D) İHTİYAÇ analiziyle belirlenir (summary + steps + pre-association metni)
 #   A: Data/Pre gerekmiyor • B: Pre gerekli • C: Data gerekli • D: Data+Pre gerekli
 # - OVERRIDE: Hem Data (steps’te anlamlı) hem Pre (CSV’de iki sütundan biri dolu) yazılmışsa → D
 # - PUANLAMA:
 #   • Pre puanı: yalnızca CSV’deki iki sütundan biri doluysa
 #   • Data/Expected puanı: steps/expected’ta gerçek/anlamlı varlığa göre
-#   • ✏️ Expected yazım cezası: Expected’ta “-di’li geçmiş zaman” tespit edilirse 1–5 arası kesinti
+#   • ✏️ Expected yazım cezası: Expected’ta “-di’li geçmiş zaman” tespit edilirse 1–5 puan kesinti
 # - Stepler: tek blok + çok adım/edilgen ise 1 puan
-# - Debug: tetiklenen sinyaller + Expected yazım isabet/ceza bilgisi
+# - Debug: tetiklenen sinyaller + güçlü data kombinasyonu + Expected yazım isabet/ceza bilgisi
 
 import streamlit as st
 import pandas as pd
@@ -202,22 +202,46 @@ def scan_precond_signals(text: str):
 def scan_data_signals(text: str):
     t = (text or "").lower()
     s = []
+    # mevcut sinyaller
     if _match(r'\b(select|insert|update|delete)\b', t): s.append("SQL")
-    if _match(r'\b(json|payload|body|request|response|headers|content-type)\b', t) and _match(r'"\w+"\s*:\s*".+?"', t): s.append("JSON body")
-    if _match(r'\b(msisdn|token|iban|imei|email|username|password|user[_\\-]?id|subscriber)\b', t): s.append("ID field")
-    if _match(r'\b(post|put|patch)\b', t) and _match(r'\b(body|payload)\b', t): s.append("POST payload")
+    if _match(r'\b(json|payload|body|request|response|headers|content-type)\b', t) and _match(r'"\w+"\s*:\s*".+?"', t):
+        s.append("JSON body")
+    if _match(r'\b(msisdn|token|iban|imei|email|username|password|user[_\\-]?id|subscriber)\b', t):
+        s.append("ID field")
+    if _match(r'\b(post|put|patch)\b', t) and _match(r'\b(body|payload)\b', t):
+        s.append("POST payload")
     if _match(r'<\\s*(msisdn|token|iban|imei|email|username|password|user[_\\-]?id)\\s*>', t) or \
-       _match(r'\\{\\s*(msisdn|token|iban|imei|email|username|password|user[_\\-]?id)\\s*\\}', t): s.append("Placeholder(ID)")
+       _match(r'\\{\\s*(msisdn|token|iban|imei|email|username|password|user[_\\-]?id)\\s*\\}', t):
+        s.append("Placeholder(ID)")
+
+    # 🔎 yeni sinyaller
+    if _match(r'/(?:[a-z0-9_\\-]+)(?:/[a-z0-9_\\-]+){2,}', t): s.append("HTTP path")
+    if _match(r"\bid[’' ]?li\b", t) or _match(r"\b(episode|content|asset)[_\\- ]?id\b", t) or _match(r"\bid\b", t):
+        s.append("ID token")
+    if _match(r"\b\d{6,}\b", t):
+        s.append("Long numeric ID")
+    if _match(r"\b(response|cevap|yanıt)\b", t):
+        s.append("Response mention")
+    if _match(r"\b(tablosu|tablosundaki|table|collection|index)\b", t):
+        s.append("Table mention")
+
     return list(set(s))
 
 # ---- İhtiyaç analizi ----
-def decide_data_needed(summary: str, steps_text: str) -> (bool, list):
+def decide_data_needed(summary: str, steps_text: str):
+    """Return (needed: bool, data_signals: list[str], strong_combo: bool)."""
     combined = (summary or "") + "\n" + (steps_text or "")
     ds = scan_data_signals(combined)
-    needed = len(ds) >= 2 or bool(extract_data_blocks(steps_text))
-    return needed, ds
 
-def decide_precond_needed(summary: str, steps_text: str, pre_assoc_text: str) -> (bool, list):
+    strong_combo = (
+        ("ID token" in ds and "Response mention" in ds) or
+        ("HTTP path" in ds and "ID token" in ds) or
+        ("Table mention" in ds and "Long numeric ID" in ds)
+    )
+    needed = strong_combo or len(ds) >= 2 or bool(extract_data_blocks(steps_text))
+    return needed, ds, strong_combo
+
+def decide_precond_needed(summary: str, steps_text: str, pre_assoc_text: str):
     combined = (summary or "") + "\n" + (steps_text or "") + "\n" + (pre_assoc_text or "")
     ps = scan_precond_signals(combined)
     needed = len(ps) >= 1
@@ -225,9 +249,10 @@ def decide_precond_needed(summary: str, steps_text: str, pre_assoc_text: str) ->
 
 # ---- TABLO KARARI (ihtiyaç + override) ----
 def choose_table(summary: str, steps_text: str, pre_assoc_text: str, *, data_written: bool, pre_written_csv: bool, debug: bool=False):
-    data_needed, data_sigs = decide_data_needed(summary, steps_text)
-    pre_needed,  pre_sigs  = decide_precond_needed(summary, steps_text, pre_assoc_text)
+    data_needed, data_sigs, data_strong = decide_data_needed(summary, steps_text)
+    pre_needed,  pre_sigs              = decide_precond_needed(summary, steps_text, pre_assoc_text)
 
+    # OVERRIDE: hem data YAZILMIŞ (steps) hem pre YAZILMIŞ (CSV) ise → D
     if data_written and pre_written_csv:
         decision = ("D", 14, [1,2,3,4,5,6,7])
     else:
@@ -241,7 +266,7 @@ def choose_table(summary: str, steps_text: str, pre_assoc_text: str, *, data_wri
             decision = ("A", 20, [1,2,5,6,7])
 
     if debug:
-        return (*decision, data_sigs, pre_sigs, data_needed, pre_needed)
+        return (*decision, data_sigs, pre_sigs, data_needed, pre_needed, data_strong)
     return decision
 
 # ---- ACTION/STEPLER ----
@@ -292,13 +317,10 @@ def has_expected_present(steps_text: str) -> bool:
     return any(is_meaningful_expected(b) for b in blocks)
 
 # ✏️ ---- EXPECTED YAZIM KALİTESİ CEZASI ----
-# Sık görülen geçmiş zaman/olup-bitti anlatımı (3. tekil çoğunda -di/-dı/-du/-dü, pasif -ildi/-ıldı/-uldu/-üldü, vs.)
 _EXPECT_PAST_WORDS = r"(oldu|olmadı|gerçekleşti|gerçekleşmedi|yapıldı|yapılmadı|edildi|edilmedi|sağlandı|sağlanmadı|tamamlandı|tamamlanmadı|görüldü|görülmedi|döndü|başarılı oldu|başarısız oldu|hata verdi|gösterildi|gösterilmedi)"
 _EXPECT_PAST_REGEXES = [
     re.compile(rf"\b{_EXPECT_PAST_WORDS}\b", re.I),
-    # pasif geçmiş -ildi/-ıldı/-uldu/-üldü ve -ndi varyasyonları
     re.compile(r"\b\w+(ildi|ıldı|uldu|üldü|ndi|ndı|ndu|ndü)\b", re.I),
-    # olumsuz geçmiş -medi/-madı
     re.compile(r"\b\w+(medi|madı)\b", re.I),
 ]
 
@@ -310,12 +332,10 @@ def expected_style_hits(text: str) -> int:
     return hits
 
 def expected_style_penalty(blocks: list[str]) -> tuple[int, int]:
-    """Return (hits, penalty 0–5)."""
     txt = " . ".join(blocks or [])
     hits = expected_style_hits(txt)
     if hits <= 0: 
         return 0, 0
-    # isabete göre ceza merdiveni
     if hits == 1: pen = 1
     elif hits == 2: pen = 2
     elif hits == 3: pen = 3
@@ -359,10 +379,10 @@ def score_one(row, df_cols, debug=False):
 
     # İçerik analizi + override → TABLO
     if debug:
-        table, base, active, data_sigs, pre_sigs, data_needed, pre_needed = choose_table(
+        table, base, active, data_sigs, pre_sigs, data_needed, pre_needed, data_strong = choose_table(
             summary, steps_text, pre_assoc_text,
             data_written=data_present_for_scoring,
-            pre_written_csv=precond_provided_from_csv(row, df_cols),
+            pre_written_csv=precond_provided_csv,
             debug=True
         )
     else:
@@ -374,6 +394,7 @@ def score_one(row, df_cols, debug=False):
         )
         data_sigs = pre_sigs = []
         data_needed = pre_needed = None
+        data_strong = None
 
     # Actions
     action_blocks = extract_action_blocks(steps_text)
@@ -459,6 +480,7 @@ def score_one(row, df_cols, debug=False):
             "_pre_sigs":  ", ".join(sorted(pre_sigs)) or "-",
             "_data_needed": data_needed,
             "_pre_needed":  pre_needed,
+            "_data_strong": data_strong,
             "_data_written": data_present_for_scoring,
             "_pre_written_csv": precond_provided_csv,
             "_exp_hits": hits_dbg,
@@ -502,7 +524,7 @@ if uploaded:
 
     show_cols = ["Key","Summary","Tablo","Toplam Puan","Skor %","Açıklama"]
     if show_debug:
-        show_cols += ["_data_needed","_pre_needed","_data_written","_pre_written_csv","_data_sigs","_pre_sigs","_exp_hits","_exp_penalty"]
+        show_cols += ["_data_needed","_pre_needed","_data_strong","_data_written","_pre_written_csv","_data_sigs","_pre_sigs","_exp_hits","_exp_penalty"]
 
     st.markdown("## 📊 Değerlendirme Tablosu")
     st.dataframe(
@@ -518,6 +540,7 @@ if uploaded:
             "Açıklama": st.column_config.TextColumn("Açıklama", width="large"),
             "_data_needed": st.column_config.TextColumn("need:data"),
             "_pre_needed": st.column_config.TextColumn("need:pre"),
+            "_data_strong": st.column_config.TextColumn("data:strong_combo"),
             "_data_written": st.column_config.TextColumn("has:data(steps)"),
             "_pre_written_csv": st.column_config.TextColumn("has:pre(CSV)"),
             "_data_sigs": st.column_config.TextColumn("Data sinyalleri"),
@@ -564,7 +587,7 @@ if uploaded:
 
         if show_debug:
             with st.expander(f"🔎 Debug — {r['Key']}"):
-                st.markdown(f"- need:data: `{r.get('_data_needed')}` — sinyaller: {r.get('_data_sigs')}")
+                st.markdown(f"- need:data: `{r.get('_data_needed')}` • strong_combo: `{r.get('_data_strong')}` — sinyaller: {r.get('_data_sigs')}")
                 st.markdown(f"- need:pre : `{r.get('_pre_needed')}` — sinyaller: {r.get('_pre_sigs')}")
                 st.markdown(f"- has:data(steps): `{r.get('_data_written')}` • has:pre(CSV): `{r.get('_pre_written_csv')}`")
                 st.markdown(f"- ✏️ Expected yazım isabet: `{r.get('_exp_hits')}`, ceza: `{r.get('_exp_penalty')}`")
