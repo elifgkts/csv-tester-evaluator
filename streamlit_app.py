@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v2.7
-# - Dark mode CSS
-# - Data/Precondition: gerçek içerik kontrolü (HTML/JSON/blok başlıkları)
-# - Expected Result: TÜM adımlar taranır; herhangi birinde varsa puan
-# - Stepler (GÜNCEL KURAL): Tek Action bloğu + çok adım VEYA edilgen ifade → 1 puan
-# - KPI, tablo, CSV ve Detay Kartları + debug
-# - Örnek seçimi (sampling) için sabit tohum düzeltmesi (fix_seed & reroll)
-# - Client tarayıcı listesine Firefox/Edge eklendi; pasif fiil kalıpları genişletildi
+# 📌 Test Case Evaluator v2.8
+# - Tablo (A/B/C/D) SADECE içerik analiziyle (summary + steps) belirlenir
+# - Puanlama: Data/Pre/Expected alanlarının GERÇEK varlığına göre yapılır
+#     • Pre-Condition varlığı: CSV sütunlarıyla doğrulanır
+#       ("Tests association with a Pre-Condition" veya
+#        "Pre-Conditions association with a Test" – isim varyasyonlarına toleranslı)
+#     • Data varlığı: steps içindeki Data blokları/SQL vb. sinyaller
+#     • Expected varlığı: steps içindeki Expected bloklarından
+# - Tek Action bloğunda çok adım/edilgen ifade → Stepler = 1 puan kuralı
+# - Dark mode CSS, KPI, dağılım grafiği, detay kartları, CSV indirme
+# - Dosya yükleme: st.file_uploader (sabit yol YOK)
 
 import streamlit as st
 import pandas as pd
@@ -89,7 +92,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 st.markdown(f"""
 <div class="app-hero">
   <h1>📋 Test Case Kalite Değerlendirmesi</h1>
-  <p>Test caseleri A/B/C/D tablosuna göre senaryo içeriğini analiz ederek puanlar.
+  <p>Tablo belirleme: içerik analizi • Puanlama: gerçek alan varlığına göre.
   <span style="opacity:0.8">Rapor zamanı: {datetime.now().strftime('%d.%m.%Y %H:%M')}</span></p>
 </div>
 """, unsafe_allow_html=True)
@@ -98,8 +101,9 @@ with st.expander("📌 Kurallar (özet)"):
     st.markdown("""
 - **CSV ayraç:** `;`  
 - **Gerekli sütunlar:** `Issue key` (veya `Issue Key`), `Summary`, `Priority`, `Labels`, `Custom field (Manual Test Steps)`  
-- **Tablo mantığı (senaryoya göre):** A: Data/Pre yok • B: Pre gerekli • C: Data gerekli • D: Data+Pre gerekli  
-- **Puanlar:** A=5×20, B=6×17, C=6×17, D=7×14
+- **Tablo mantığı (senaryoya göre, içerik analizi):** A: Data/Pre yok • B: Pre gerekli • C: Data gerekli • D: Data+Pre gerekli  
+- **Puanlar:** A=5×20, B=6×17, C=6×17, D=7×14  
+- **Pre-Condition puanı:** CSV’de **Pre-Condition association** sütunları **doluysa** verilir.
 """)
 
 # ---------- Sidebar ----------
@@ -115,16 +119,17 @@ if st.sidebar.button("🎲 Yeniden örnekle"):
 uploaded = st.file_uploader("📤 CSV yükle (`;` ayraçlı)", type="csv")
 
 # ---------- Yardımcılar ----------
-def _text(x):
-    return str(x or "")
+def _text(x): return str(x or "")
+def _match(pattern, text): return re.search(pattern, text or "", re.IGNORECASE)
 
-def _match(pattern, text):
-    return re.search(pattern, text or "", re.IGNORECASE)
+def _normalize_newlines(s: str) -> str:
+    s = (s or "").replace("\r\n","\n").replace("\r","\n")
+    return s
 
 def _cleanup_html(s: str) -> str:
-    s = s or ""
+    s = _normalize_newlines(s or "")
     s = re.sub(r'<br\s*/?>', '\n', s, flags=re.I)
-    s = re.sub(r'</?(p|div|li|tr|td|th|ul|ol|span)>', '\n', s, flags=re.I)
+    s = re.sub(r'</?(p|div|li|tr|td|th|ul|ol|span|b|strong)>', '\n', s, flags=re.I)
     s = re.sub(r'<[^>]+>', ' ', s)
     return s
 
@@ -132,184 +137,141 @@ def _is_meaningless(val: str) -> bool:
     meaningless = {"", "-", "—", "none", "n/a", "na", "null", "yok"}
     return re.sub(r'\s+', ' ', (val or '')).strip().lower() in meaningless
 
-def extract_first(text, key):
-    m = re.search(rf'"{key}"\s*:\s*"(.*?)"', text or "", re.IGNORECASE | re.DOTALL)
-    return m.group(1).strip() if m else ""
+# ---- CSV sütun adı toleransı (örn. Jira export farklı etiketleyebilir) ----
+def pick_first_existing(colnames, df_cols):
+    for name in colnames:
+        if name in df_cols:
+            return name
+    return None
 
-# ---- DATA ALGILAMA (blok + JSON + HTML) ----
+# ---- DATA ALGILAMA ----
 def extract_data_blocks(steps_text: str) -> list[str]:
     blocks = []
-    # JSON "Data":"..."
-    for m in re.finditer(r'"Data"\s*:\s*"(?:\\.|[^"])*"', steps_text or "", re.IGNORECASE | re.DOTALL):
-        raw = m.group(0)
-        val = re.sub(r'^.*?":\s*"(.*)"$', r'\1', raw, flags=re.DOTALL)
-        val = val.replace('\\"', '"').strip()
-        if val:
-            blocks.append(val)
-    # HTML/metin: Data başlığından bir sonraki başlığa
-    txt = _cleanup_html(steps_text)
+    txt_raw = _normalize_newlines(steps_text or "")
+    # JSON "Data":"..." VEYA 'Data':'...'
+    for m in re.finditer(r'["\']Data["\']\s*:\s*["\']((?:\\.|[^"\'])*)["\']', txt_raw, re.I | re.DOTALL):
+        val = m.group(1).replace('\\"','"').replace("\\'", "'").strip()
+        if val: blocks.append(val)
+    # Metin/HTML başlığı: Data / Data 1 vs
+    txt = _cleanup_html(txt_raw)
     pattern = re.compile(
-        r'(?:^|\n)\s*Data\s*:?\s*(.*?)\s*(?=(?:^|\n)\s*(?:Expected\s*Result|Action|Attachments?)\b|$)',
-        re.IGNORECASE | re.DOTALL
+        r'(?:^|\n)\s*Data(?:\s*\d+)?\s*:?\s*(.*?)\s*(?=(?:^|\n)\s*(?:Expected\s*Result|Action|Adım|Step|Attachments?)\b|$)',
+        re.I | re.DOTALL
     )
     for m in pattern.finditer(txt):
-        val = m.group(1).strip()
-        if val:
-            blocks.append(val)
+        val = (m.group(1) or '').strip()
+        if val: blocks.append(val)
     return [b for b in blocks if b.strip()]
 
 def is_meaningful_data(value: str) -> bool:
-    if _is_meaningless(value):
-        return False
+    if _is_meaningless(value): return False
     v = value.strip()
-    if re.search(r'https?://', v, re.I): 
-        return True
-    if re.search(r'\b(select|insert|update|delete)\b', v, re.I): 
-        return True
-    if re.search(r'\b[a-z_]+\.[a-z_]+\b', v, re.I):  # tablo.adı biçiminde kontrol
-        return True
-    if len(re.sub(r'\s+', '', v)) >= 2: 
-        return True
+    if re.search(r'https?://', v, re.I): return True
+    if re.search(r'\b(select|insert|update|delete)\b', v, re.I): return True
+    if re.search(r'\b[a-z_]+\.[a-z_]+\b', v, re.I): return True  # tablo.adı
+    if len(re.sub(r'\s+', '', v)) >= 2: return True
     return False
 
 def has_data_present_for_scoring(steps_text: str) -> bool:
     blocks = extract_data_blocks(steps_text)
-    return any(is_meaningful_data(b) for b in blocks)
-
-# ---- PRECONDITION (var mı? & sinyal) ----
-def has_precond_tag_with_value(steps_text: str) -> bool:
-    pattern = re.compile(r'(?:^|\r?\n)\s*[-\s]*Precondition\s*:\s*(.*)', re.IGNORECASE)
-    for m in pattern.finditer(steps_text or ""):
-        val = (m.group(1) or "").strip()
-        if not _is_meaningless(val):
-            return True
-    # JSON format
-    for m in re.finditer(r'"Precondition"\s*:\s*"(.*?)"', steps_text or "", re.IGNORECASE | re.DOTALL):
-        val = (m.group(1) or "").strip()
-        if not _is_meaningless(val):
-            return True
+    if any(is_meaningful_data(b) for b in blocks):
+        return True
+    # ek sinyal: steps içerisinde bağımsız SQL geçtiyse
+    if re.search(r'\b(select|insert|update|delete)\b', steps_text or "", re.I):
+        return True
     return False
 
-def scan_data_signals(text: str):
-    t = (text or "").lower()
-    signals = []
-    if _match(r'\b(select|insert|update|delete)\b', t): 
-        signals.append("SQL")
-    if _match(r'\b(json|payload|body|request|response|headers|content-type)\b', t) and _match(r'"\w+"\s*:\s*".+?"', t):
-        signals.append("JSON body")
-    if _match(r'\b(msisdn|token|iban|imei|email|username|password|user[_\-\ ]?id|subscriber)\b', t):
-        signals.append("ID field")
-    if _match(r'\b(post|put|patch)\b', t) and _match(r'\b(body|payload)\b', t):
-        signals.append("POST payload")
-    if _match(r'<\s*(msisdn|token|iban|imei|email|username|password|user[_\-\ ]?id)\s*>', t) or \
-       _match(r'\{\s*(msisdn|token|iban|imei|email|username|password|user[_\-\ ]?id)\s*\}', t):
-        signals.append("Placeholder(ID)")
-    return list(set(signals))
-
+# ---- PRECONDITION: TABLO KARARI için içerik sinyalleri ----
 def scan_precond_signals(text: str):
     t = (text or "").lower()
     signals = []
-    if _match(r'\bprecondition\b|ön\s*koşul|given .*already', t): 
-        signals.append("Precondition ifadesi")
-    if _match(r'\b(logged in|login|giriş yap(mış|ın)|authenticated|auth)\b', t): 
-        signals.append("Login/Auth")
-    if _match(r'\b(subscription|abonelik)\b.*\b(aktif|var|existing)\b', t): 
-        signals.append("Abonelik aktif")
-    if _match(r'\b(existing user|mevcut kullanıcı)\b', t): 
-        signals.append("Mevcut kullanıcı/hesap")
-    if _match(r'\b(seed|setup|config(ure|)|feature flag|whitelist|allowlist|role|permission)\b', t): 
-        signals.append("Ortam/Ayar/Yetki")
+    if _match(r'\bprecondition\b|ön\s*koşul|given .*already', t): signals.append("Precondition ifadesi")
+    if _match(r'\b(logged in|login|giriş yap(mış|ın)|authenticated|auth)\b', t): signals.append("Login/Auth")
+    if _match(r'\b(subscription|abonelik)\b.*\b(aktif|var|existing)\b', t): signals.append("Abonelik aktif")
+    if _match(r'\bexisting user|mevcut kullanıcı\b', t): signals.append("Mevcut kullanıcı/hesap")
+    if _match(r'\b(seed|setup|config(ure|)|feature flag|whitelist|allowlist|role|permission)\b', t): signals.append("Ortam/Ayar/Yetki")
     return list(set(signals))
 
+# ---- DATA: TABLO KARARI için içerik sinyalleri ----
+def scan_data_signals(text: str):
+    t = (text or "").lower()
+    signals = []
+    if _match(r'\b(select|insert|update|delete)\b', t): signals.append("SQL")
+    if _match(r'\b(json|payload|body|request|response|headers|content-type)\b', t) and _match(r'"\w+"\s*:\s*".+?"', t):
+        signals.append("JSON body")
+    if _match(r'\b(msisdn|token|iban|imei|email|username|password|user[_\\-]?id|subscriber)\b', t):
+        signals.append("ID field")
+    if _match(r'\b(post|put|patch)\b', t) and _match(r'\b(body|payload)\b', t):
+        signals.append("POST payload")
+    if _match(r'<\\s*(msisdn|token|iban|imei|email|username|password|user[_\\-]?id)\\s*>', t) or \
+       _match(r'\\{\\s*(msisdn|token|iban|imei|email|username|password|user[_\\-]?id)\\s*\\}', t):
+        signals.append("Placeholder(ID)")
+    return list(set(signals))
+
+# ---- TABLO KARARI (sadece içerik) ----
 def decide_data_needed(summary: str, steps_text: str) -> bool:
-    # Data gerekli mi? (Data blok mevcutsa veya güçlü sinyaller varsa)
-    if has_data_present_for_scoring(steps_text):
-        return True
+    # DOLU olmasına bakma → sadece içerik sinyalleriyle karar ver
     combined = (summary or "") + "\n" + (steps_text or "")
-    return len(scan_data_signals(combined)) >= 2  # en az iki güçlü sinyal → data gerekli
+    if len(scan_data_signals(combined)) >= 2: return True
+    # Eğer açıkça Data başlığı/sinyali varsa da "gerekli" say
+    if extract_data_blocks(steps_text): return True
+    return False
 
 def decide_precond_needed(summary: str, steps_text: str) -> bool:
-    # Ön koşul gerekli mi? (Precondition alanı veya herhangi bir sinyal varsa)
-    if has_precond_tag_with_value(steps_text):
-        return True
     combined = (summary or "") + "\n" + (steps_text or "")
     return len(scan_precond_signals(combined)) >= 1
 
 def choose_table(summary: str, steps_text: str):
     data_needed = decide_data_needed(summary, steps_text)
-    pre_needed = decide_precond_needed(summary, steps_text)
-    if data_needed and pre_needed: 
-        return "D", 14, [1,2,3,4,5,6,7]   # D tablosu: 7 kriter, her biri 14 puan (toplam 98)
-    if data_needed: 
-        return "C", 17, [1,2,3,5,6,7]    # C tablosu: 6 kriter (Data var, Pre yok)
-    if pre_needed: 
-        return "B", 17, [1,2,4,5,6,7]    # B tablosu: 6 kriter (Pre var, Data yok)
-    return "A", 20, [1,2,5,6,7]          # A tablosu: 5 kriter (ne Data ne Pre)
+    pre_needed  = decide_precond_needed(summary, steps_text)
+    if data_needed and pre_needed: return "D", 14, [1,2,3,4,5,6,7]
+    if data_needed:                 return "C", 17, [1,2,3,5,6,7]
+    if pre_needed:                  return "B", 17, [1,2,4,5,6,7]
+    return "A", 20, [1,2,5,6,7]
 
 # ---- ACTION/STEPLER ----
 def extract_action_blocks(steps_text: str) -> list[str]:
     blocks = []
-    # JSON "Action":"..."
-    for m in re.finditer(r'"Action"\s*:\s*"(?:\\.|[^"])*"', steps_text or "", re.IGNORECASE | re.DOTALL):
-        raw = m.group(0)
-        val = re.sub(r'^.*?":\s*"(.*)"$', r'\1', raw, flags=re.DOTALL)
-        val = val.replace('\\"', '"').strip()
-        if val:
-            blocks.append(val)
-    # HTML/metin: Action başlığından bir sonraki başlığa
-    txt = _cleanup_html(steps_text)
+    txt_raw = _normalize_newlines(steps_text or "")
+    # JSON "Action":"..." veya 'Action':'...'
+    for m in re.finditer(r'["\']Action["\']\s*:\s*["\']((?:\\.|[^"\'])*)["\']', txt_raw, re.I | re.DOTALL):
+        val = m.group(1).replace('\\"','"').replace("\\'", "'").strip()
+        if val: blocks.append(val)
+    # HTML/metin başlıkları: Action/Adım/Step (+index destekli)
+    txt = _cleanup_html(txt_raw)
     pattern = re.compile(
-        r'(?:^|\n)\s*Action\s*:?\s*(.*?)\s*(?=(?:^|\n)\s*(?:Data|Expected\s*Result|Attachments?)\b|$)',
-        re.IGNORECASE | re.DOTALL
+        r'(?:^|\n)\s*(?:Action|Adım|Step)(?:\s*\d+)?\s*:?\s*(.*?)\s*(?=(?:^|\n)\s*(?:Data|Expected\s*Result|Attachments?|Action|Adım|Step)\b|$)',
+        re.I | re.DOTALL
     )
     for m in pattern.finditer(txt):
-        val = m.group(1).strip()
-        if val:
-            blocks.append(val)
+        val = (m.group(1) or '').strip()
+        if val: blocks.append(val)
+    # "Step 1:" vb. ayraçlarıyla tek blok bölünsün
+    if len(blocks) <= 1:
+        split_blocks = re.split(r'(?:^|\n)\s*Step\s*\d+\s*:\s*', txt, flags=re.I)
+        split_blocks = [b.strip() for b in split_blocks if b.strip()]
+        if len(split_blocks) > 1:
+            blocks = split_blocks
     return [b for b in blocks if b.strip()]
 
-def block_has_many_substeps(text: str) -> bool:
-    """Tek Action bloğu içinde çok adım yazılmış mı?"""
-    t = _cleanup_html(text or "")
-    # Numara ya da madde işareti ile birden fazla satır var mı?
-    if re.search(r'(^|\n)\s*(\d+[\).\-\:]|\-|\*|\•)\s+\S+', t):
-        return True
-    # Satır sayısı >= 3 ise (en az 2 satır içeriği var demektir)
-    lines = [ln.strip() for ln in re.split(r'(?:\r?\n)+', t) if ln.strip()]
-    if len(lines) >= 3:
-        return True
-    # Noktalı virgül ile çok sayıda ifade bağlanmış mı?
-    if t.count(';') >= 2:
-        return True
-    # "ve, sonra, ardından" gibi bağlaçlar çok sayıda kullanılmış mı?
-    joiners = re.findall(r'(?:,|\bve\b|\bsonra\b|\bardından\b)', t, re.I)
-    if len(joiners) >= 3:
-        return True
-    return False
-
-# ---- EXPECTED ----
 def extract_expected_blocks(steps_text: str) -> list[str]:
     blocks = []
-    for m in re.finditer(r'"Expected\s*Result"\s*:\s*"(?:\\.|[^"])*"', steps_text or "", re.IGNORECASE | re.DOTALL):
-        raw = m.group(0)
-        val = re.sub(r'^.*?":\s*"(.*)"$', r'\1', raw, flags=re.DOTALL)
-        val = val.replace('\\"', '"').strip()
-        if val:
-            blocks.append(val)
-    txt = _cleanup_html(steps_text)
+    txt_raw = _normalize_newlines(steps_text or "")
+    for m in re.finditer(r'["\']Expected\s*Result["\']\s*:\s*["\']((?:\\.|[^"\'])*)["\']', txt_raw, re.I | re.DOTALL):
+        val = m.group(1).replace('\\"','"').replace("\\'", "'").strip()
+        if val: blocks.append(val)
+    txt = _cleanup_html(txt_raw)
     pattern = re.compile(
         r'(?:^|\n)\s*Expected\s*Result\s*:?\s*(.*?)\s*(?=(?:^|\n)\s*(?:Action|Data|Attachments?)\b|$)',
-        re.IGNORECASE | re.DOTALL
+        re.I | re.DOTALL
     )
     for m in pattern.finditer(txt):
-        val = m.group(1).strip()
-        if val:
-            blocks.append(val)
+        val = (m.group(1) or '').strip()
+        if val: blocks.append(val)
     return [b for b in blocks if b.strip()]
 
 def is_meaningful_expected(value: str) -> bool:
-    if _is_meaningless(value):
-        return False
+    if _is_meaningless(value): return False
     v = value.strip()
     return len(re.sub(r'\s+', '', v)) >= 2
 
@@ -317,201 +279,177 @@ def has_expected_present(steps_text: str) -> bool:
     blocks = extract_expected_blocks(steps_text)
     return any(is_meaningful_expected(b) for b in blocks)
 
-# ---------- Skorlama ----------
-# Pasif ifade kalıpları (geçmiş zaman + geniş zaman)
+# ---- PRECONDITION VARLIĞI (PUANLAMA için CSV alanları) ----
+PRECOND_CANDIDATES_1 = [
+    "Tests association with a Pre-Condition",
+    "Custom field (Tests association with a Pre-Condition)",
+    "Tests Association With A Pre-Condition",
+]
+PRECOND_CANDIDATES_2 = [
+    "Pre-Conditions association with a Test",
+    "Custom field (Pre-Conditions association with a Test)",
+    "Pre-Conditions Association With A Test",
+]
+
+def precondition_provided_from_csv(row, df_cols) -> bool:
+    c1 = pick_first_existing(PRECOND_CANDIDATES_1, df_cols)
+    c2 = pick_first_existing(PRECOND_CANDIDATES_2, df_cols)
+    v1 = _text(row.get(c1)) if c1 else ""
+    v2 = _text(row.get(c2)) if c2 else ""
+    def nonempty(x): return len(x.strip()) > 0 and not _is_meaningless(x)
+    return nonempty(v1) or nonempty(v2)
+
+# ---- Stepler kuralı (tek blok + çok adım/edilgen) ----
 PASSIVE_PATTERNS = re.compile(
-    r'\b(yapıldı|edildi|gerçekleştirildi|sağlandı|tamamlandı|kontrol edildi|yapılır|edilir|gerçekleştirilir|sağlanır|tamamlanır|kontrol edilir)\b', 
-    re.IGNORECASE
+    r'\b(yapıldı|edildi|gerçekleştirildi|sağlandı|tamamlandı|kontrol edildi|yapılır|edilir|gerçekleştirilir|sağlanır|tamamlanır|kontrol edilir)\b',
+    re.I
 )
 
-def score_one(row):
-    # Temel alanları al
+def block_has_many_substeps(text: str) -> bool:
+    t = _cleanup_html(text or "")
+    if re.search(r'(^|\n)\s*(\d+[\).\-\:]|\-|\*|\•)\s+\S+', t): return True
+    lines = [ln.strip() for ln in re.split(r'(?:\n)+', t) if ln.strip()]
+    if len(lines) >= 3: return True
+    if t.count(';') >= 2: return True
+    joiners = re.findall(r'(?:,|\bve\b|\bsonra\b|\bardından\b)', t, re.I)
+    if len(joiners) >= 3: return True
+    return False
+
+# ---------- Skorlama ----------
+def score_one(row, df_cols):
     key = _text(row.get('Issue key') or row.get('Issue Key') or row.get('Key') or row.get('IssueKey'))
     summary = _text(row.get('Summary') or row.get('Issue Summary') or row.get('Title'))
     priority = _text(row.get('Priority')).lower()
-    # Adım/Steps sütununu bul
-    steps_col_name = None
-    for cand in ['Custom field (Manual Test Steps)', 'Manual Test Steps', 'Steps', 'Custom Steps']:
-        if cand in row.index:
-            steps_col_name = cand
-            break
+
+    # Steps sütunu:
+    steps_col_name = pick_first_existing([
+        'Custom field (Manual Test Steps)', 'Manual Test Steps', 'Steps', 'Custom Steps'
+    ], df_cols)
     steps_text = _text(row.get(steps_col_name)) if steps_col_name else ""
 
-    # Action (adım) bloklarını çıkar
+    # İçerik analizi → TABLO
+    table, base, active = choose_table(summary, steps_text)
+
+    # Puanlanacak alanların iç varlığı:
     action_blocks = extract_action_blocks(steps_text)
     all_actions_text = " \n ".join(action_blocks)
-    expected_present = has_expected_present(steps_text)
-
-    # Hangi tablo (A/B/C/D) ve puan değerleri?
-    table, base, active = choose_table(summary, steps_text)
+    data_present_for_scoring = has_data_present_for_scoring(steps_text)     # Data puanı için
+    expected_present = has_expected_present(steps_text)                     # Expected puanı için
+    precond_provided = precondition_provided_from_csv(row, df_cols)         # Pre puanı için (CSV’den)
 
     pts, notes, total = {}, [], 0
 
     # 1) Başlık
     if 1 in active:
         if not summary or len(summary) < 10:
-            pts['Başlık'] = 0
-            notes.append("❌ Başlık çok kısa")
+            pts['Başlık'] = 0; notes.append("❌ Başlık çok kısa")
         elif any(w in summary.lower() for w in ["test edilir", "kontrol edilir"]):
-            pts['Başlık'] = max(base - 3, 1)
-            notes.append(f"🔸 Başlık zayıf ifade ({pts['Başlık']})")
-            total += pts['Başlık']
+            pts['Başlık'] = max(base-3, 1); notes.append(f"🔸 Başlık zayıf ifade ({pts['Başlık']})"); total += pts['Başlık']
         else:
-            pts['Başlık'] = base
-            notes.append("✅ Başlık anlaşılır")
-            total += base
+            pts['Başlık'] = base; notes.append("✅ Başlık anlaşılır"); total += base
 
     # 2) Öncelik
     if 2 in active:
         if priority in ["", "null", "none"]:
-            pts['Öncelik'] = 0
-            notes.append("❌ Öncelik eksik")
+            pts['Öncelik'] = 0; notes.append("❌ Öncelik eksik")
         else:
-            pts['Öncelik'] = base
-            notes.append("✅ Öncelik var")
-            total += base
+            pts['Öncelik'] = base; notes.append("✅ Öncelik var"); total += base
 
-    # 3) Data
+    # 3) Data (yalnızca C ve D tablolarında aktif)
     if 3 in active:
-        if has_data_present_for_scoring(steps_text):
-            pts['Data'] = base
-            notes.append("✅ Data mevcut")
+        if data_present_for_scoring:
+            pts['Data'] = base; notes.append("✅ Data mevcut (steps)")
             total += base
         else:
-            pts['Data'] = 0
-            notes.append("❌ Data bulunamadı")
+            pts['Data'] = 0; notes.append("❌ Data bulunamadı")
 
-    # 4) Ön Koşul
+    # 4) Ön Koşul (yalnızca B ve D tablolarında aktif) — CSV alanlarıyla
     if 4 in active:
-        if has_precond_tag_with_value(steps_text) or decide_precond_needed(summary, steps_text):
-            pts['Ön Koşul'] = base
-            notes.append("✅ Ön koşul belirtilmiş/ima edilmiş")
+        if precond_provided:
+            pts['Ön Koşul'] = base; notes.append("✅ Pre-Condition association var (CSV)")
             total += base
         else:
-            pts['Ön Koşul'] = 0
-            notes.append("❌ Ön koşul eksik")
+            pts['Ön Koşul'] = 0; notes.append("❌ Pre-Condition association eksik (CSV)")
 
-    # 5) Stepler (Adımlar)
+    # 5) Stepler
     if 5 in active:
         n_blocks = len(action_blocks)
         if n_blocks == 0:
-            pts['Stepler'] = 0
-            notes.append("❌ Stepler boş")
+            pts['Stepler'] = 0; notes.append("❌ Stepler boş")
         elif n_blocks >= 2:
-            pts['Stepler'] = base
-            notes.append(f"✅ Stepler ayrı ve düzgün ({n_blocks} adım)")
-            total += base
+            pts['Stepler'] = base; notes.append(f"✅ Stepler ayrı ve düzgün ({n_blocks} adım)"); total += base
         else:
-            # Tek action bloğu var
-            t = action_blocks[0] or ""
+            t = (action_blocks[0] or "")
             if block_has_many_substeps(t) or PASSIVE_PATTERNS.search(t):
-                pts['Stepler'] = 1
-                notes.append("❌ Tek blokta çok adım veya edilgen ifade (1 puan)")
-                total += 1
+                pts['Stepler'] = 1; notes.append("❌ Tek blokta çok adım veya edilgen ifade (1 puan)"); total += 1
             else:
-                pts['Stepler'] = base
-                notes.append("✅ Tek step ama net/tek eylem")
-                total += base
+                pts['Stepler'] = base; notes.append("✅ Tek step ama net/tek eylem"); total += base
 
     # 6) Client
     if 6 in active:
-        clients = ["android", "ios", "web", "mac", "windows", "chrome", "safari", "firefox", "edge"]
-        if any(c in (summary or "").lower() for c in clients) or any(c in (all_actions_text or "").lower() for c in clients):
-            pts['Client'] = base
-            notes.append("✅ Client bilgisi var")
-            total += base
+        ck = ["android","ios","web","mac","windows","chrome","safari","firefox","edge"]
+        if any(c in (summary or "").lower() for c in ck) or any(c in (all_actions_text or "").lower() for c in ck):
+            pts['Client'] = base; notes.append("✅ Client bilgisi var"); total += base
         else:
-            pts['Client'] = 0
-            notes.append("❌ Client bilgisi eksik")
+            pts['Client'] = 0; notes.append("❌ Client bilgisi eksik")
 
     # 7) Expected
     if 7 in active:
         if expected_present:
-            pts['Expected'] = base
-            notes.append("✅ Expected mevcut (adımlardan en az birinde)")
-            total += base
+            pts['Expected'] = base; notes.append("✅ Expected mevcut (adımlardan en az birinde)"); total += base
         else:
-            pts['Expected'] = 0
-            notes.append("❌ Expected result eksik")
+            pts['Expected'] = 0; notes.append("❌ Expected result eksik")
 
     return {
-        "Key": key,
-        "Summary": summary,
-        "Tablo": table,
-        "Toplam Puan": total,
-        **pts,
-        "Açıklama": " | ".join(notes),
-        "_raw_steps": steps_text,
-        "_actions": action_blocks  # debug amaçlı
+        "Key": key, "Summary": summary, "Tablo": table, "Toplam Puan": total,
+        **pts, "Açıklama": " | ".join(notes)
     }
 
 # ---------- Çalıştır ----------
 if uploaded:
-    # Sabit tohum ve yeniden örnekleme ayarları
-    if fix_seed:
-        # Belirli bir tohum ile (123) + her yeniden örnekle tıklamasında artan offset
-        rstate = 123 + st.session_state.reroll
-    else:
-        rstate = None
+    # Örnekleme tohum ayarı
+    rstate = (123 + st.session_state.reroll) if fix_seed else None
 
+    # CSV oku
     try:
         df = pd.read_csv(uploaded, sep=';')
     except Exception:
         df = pd.read_csv(uploaded)
 
-    # Örnek seçim (sample) boyutunu belirle ve örnekle
+    # Örnekle
     count = min(sample_size, len(df))
-    sample = df.sample(n=count, random_state=rstate) if len(df) > 0 else df
+    sample = df.sample(n=count, random_state=rstate) if len(df)>0 else df
 
-    results = sample.apply(score_one, axis=1, result_type='expand')
+    # Skorla
+    results = sample.apply(lambda r: score_one(r, df.columns), axis=1, result_type='expand')
 
-    # KPI Özetleri
+    # KPI
     total_cases = len(results)
-    avg_score = round(results["Toplam Puan"].mean() if total_cases else 0, 1)
-    min_score = int(results["Toplam Puan"].min()) if total_cases else 0
-    max_score = int(results["Toplam Puan"].max()) if total_cases else 0
-    dist = results['Tablo'].value_counts().reindex(["A", "B", "C", "D"]).fillna(0).astype(int)
+    avg_score  = round(results["Toplam Puan"].mean() if total_cases else 0, 1)
+    min_score  = int(results["Toplam Puan"].min()) if total_cases else 0
+    max_score  = int(results["Toplam Puan"].max()) if total_cases else 0
+    dist = results['Tablo'].value_counts().reindex(["A","B","C","D"]).fillna(0).astype(int)
 
     k1, k2, k3, k4 = st.columns(4)
     with k1:
-        st.markdown(
-            f'<div class="kpi"><div class="kpi-title">Toplam Örnek</div>'
-            f'<div class="kpi-value">{total_cases}</div>'
-            f'<div class="kpi-sub">Değerlendirilen</div></div>', 
-            unsafe_allow_html=True
-        )
+        st.markdown(f'<div class="kpi"><div class="kpi-title">Toplam Örnek</div><div class="kpi-value">{total_cases}</div><div class="kpi-sub">Değerlendirilen</div></div>', unsafe_allow_html=True)
     with k2:
-        st.markdown(
-            f'<div class="kpi"><div class="kpi-title">Dağılım (A/B/C/D)</div>'
-            f'<div class="kpi-value">{dist["A"]}/{dist["B"]}/{dist["C"]}/{dist["D"]}</div>'
-            f'<div class="kpi-sub">Tablo adetleri</div></div>', 
-            unsafe_allow_html=True
-        )
+        st.markdown(f'<div class="kpi"><div class="kpi-title">Dağılım (A/B/C/D)</div><div class="kpi-value">{dist["A"]}/{dist["B"]}/{dist["C"]}/{dist["D"]}</div><div class="kpi-sub">Tablo adetleri</div></div>', unsafe_allow_html=True)
     with k3:
-        st.markdown(
-            f'<div class="kpi"><div class="kpi-title">Ortalama Skor</div>'
-            f'<div class="kpi-value">{avg_score}</div>'
-            f'<div class="kpi-sub">Min: {min_score} • Max: {max_score}</div></div>', 
-            unsafe_allow_html=True
-        )
+        st.markdown(f'<div class="kpi"><div class="kpi-title">Ortalama Skor</div><div class="kpi-value">{avg_score}</div><div class="kpi-sub">Min: {min_score} • Max: {max_score}</div></div>', unsafe_allow_html=True)
     with k4:
-        st.markdown(
-            f'<div class="kpi"><div class="kpi-title">Rapor Zamanı</div>'
-            f'<div class="kpi-value">{datetime.now().strftime("%H:%M")}</div>'
-            f'<div class="kpi-sub">Yerel saat</div></div>', 
-            unsafe_allow_html=True
-        )
+        st.markdown(f'<div class="kpi"><div class="kpi-title">Rapor Zamanı</div><div class="kpi-value">{datetime.now().strftime("%H:%M")}</div><div class="kpi-sub">Yerel saat</div></div>', unsafe_allow_html=True)
 
     st.markdown("### 📈 Tablo Dağılımı")
     st.bar_chart(dist)
 
-    # Skor tablosu + CSV indirme
+    # Skor % ve tablo
     MAX_BY_TABLE = {"A": 100, "B": 102, "C": 102, "D": 98}
     results["Maks Puan"] = results["Tablo"].map(MAX_BY_TABLE).fillna(100)
-    results["Skor %"] = (results["Toplam Puan"] / results["Maks Puan"]).clip(0, 1) * 100
+    results["Skor %"] = (results["Toplam Puan"] / results["Maks Puan"]).clip(0,1) * 100
     results["Skor %"] = results["Skor %"].round(1)
 
-    show_df = results[["Key", "Summary", "Tablo", "Toplam Puan", "Skor %", "Açıklama"]].copy()
+    show_df = results[["Key","Summary","Tablo","Toplam Puan","Skor %","Açıklama"]].copy()
     st.markdown("## 📊 Değerlendirme Tablosu")
     st.dataframe(
         show_df,
@@ -522,9 +460,7 @@ if uploaded:
             "Summary": st.column_config.TextColumn("Summary", width="medium"),
             "Tablo": st.column_config.TextColumn("Tablo"),
             "Toplam Puan": st.column_config.NumberColumn("Toplam Puan", format="%d"),
-            "Skor %": st.column_config.ProgressColumn(
-                "Skor %", help="Toplam puanın tabloya göre maksimuma oranı", min_value=0, max_value=100
-            ),
+            "Skor %": st.column_config.ProgressColumn("Skor %", help="Toplam puanın tabloya göre maksimuma oranı", min_value=0, max_value=100),
             "Açıklama": st.column_config.TextColumn("Açıklama", width="large"),
         }
     )
@@ -536,11 +472,11 @@ if uploaded:
         mime="text/csv"
     )
 
-    # ---------- Detay Kartları ----------
+    # Detay kartları
     st.markdown("## 📝 Detaylar")
-    badge_map = {"A": "badge badge-a", "B": "badge badge-b", "C": "badge badge-c", "D": "badge badge-d"}
+    badge_map = {"A":"badge badge-a","B":"badge badge-b","C":"badge badge-c","D":"badge badge-d"}
 
-    for idx, r in results.iterrows():
+    for _, r in results.iterrows():
         max_pt = MAX_BY_TABLE.get(r["Tablo"], 100)
         pct = float(r["Toplam Puan"]) / max_pt if max_pt else 0
         badge_class = badge_map.get(r["Tablo"], "badge")
@@ -553,29 +489,16 @@ if uploaded:
             </div>
         ''', unsafe_allow_html=True)
 
-        c1, c2 = st.columns([3, 1])
+        c1, c2 = st.columns([3,1])
         with c1:
             st.markdown(f"**Toplam Puan:** `{int(r['Toplam Puan'])}` / `{int(max_pt)}`")
-            st.progress(min(max(pct, 0), 1.0))
+            st.progress(min(max(pct,0),1.0))
         with c2:
-            st.markdown(f"**Skor %:** **{round(pct * 100, 1)}%**")
+            st.markdown(f"**Skor %:** **{round(pct*100,1)}%**")
 
         st.markdown("<hr class='hr-soft'/>", unsafe_allow_html=True)
 
-        kriterler = ['Başlık', 'Öncelik', 'Data', 'Ön Koşul', 'Stepler', 'Client', 'Expected']
+        kriterler = ['Başlık','Öncelik','Data','Ön Koşul','Stepler','Client','Expected']
         for k in kriterler:
             if k in r and pd.notna(r[k]):
                 st.markdown(f"- **{k}**: {int(r[k])} puan")
-
-        if show_debug:
-            from html import escape
-            data_blocks = extract_data_blocks(r["_raw_steps"])
-            exp_blocks = extract_expected_blocks(r["_raw_steps"])
-            act_blocks = r["_actions"] or []
-            st.markdown(f"<small><strong>Action blok sayısı:</strong> {len(act_blocks)}</small>", unsafe_allow_html=True)
-            st.markdown(f"<small><strong>Birleşik Action?</strong> {block_has_many_substeps(act_blocks[0]) if len(act_blocks)==1 else False}</small>", unsafe_allow_html=True)
-            st.markdown(f"<small><strong>Data Blokları:</strong> {' | '.join(escape(b) for b in data_blocks) or '—'}</small>", unsafe_allow_html=True)
-            st.markdown(f"<small><strong>Expected Blokları:</strong> {' | '.join(escape(b) for b in exp_blocks) or '—'}</small>", unsafe_allow_html=True)
-
-        st.markdown(f"🗒️ **Açıklamalar:** {r['Açıklama']}")
-        st.markdown('</div>', unsafe_allow_html=True)
