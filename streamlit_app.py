@@ -1,5 +1,26 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v1.9 – UI (KPI/Progress/Sidebar) + Data puanı (etiket veya JSON alanı)
+"""
+Test Case Evaluator v2.0
+This Streamlit application scores manual test cases based on the presence of
+critical metadata (summary, priority, data, precondition, steps, client and expected result)
+and classifies each case into table A/B/C/D.  The application implements refined
+logic for detecting when a case truly contains data or preconditions and when
+those elements are merely empty markers left unfilled by the tester.
+
+Key improvements over v1.9:
+    * A Data: tag or JSON "Data" field must have a non-empty value to be counted.
+      An empty tag/field no longer counts as having data.
+    * A precondition must contain real content to award points.  An empty label
+      does not satisfy the requirement.
+    * Even when data or precondition fields are empty, the scoring logic still
+      looks for signals in the summary/steps to determine whether such elements
+      are needed.  This ensures that cases requiring data or preconditions are
+      placed into the correct table (C, B or D) even if the tester omitted them.
+    * Dedicated functions `has_data_present_for_scoring` and
+      `has_precond_present_for_scoring` distinguish between detecting presence
+      of content versus inferring the need for content.
+"""
+
 import streamlit as st
 import pandas as pd
 import re
@@ -7,7 +28,9 @@ import time
 import random
 from datetime import datetime
 
-# ---------- Sayfa & Stil ----------
+###############################################################################
+#                               Page & Style                                  #
+###############################################################################
 st.set_page_config(page_title="Test Case SLA", layout="wide")
 
 CUSTOM_CSS = """
@@ -64,7 +87,9 @@ with st.expander("📌 Kurallar (özet)"):
 - **Puanlar:** A=5×20, B=6×17, C=6×17, D=7×14
 """)
 
-# ---------- Sidebar Kontroller ----------
+###############################################################################
+#                           Sidebar Controls                                   #
+###############################################################################
 st.sidebar.header("⚙️ Ayarlar")
 sample_size = st.sidebar.slider("Kaç test case değerlendirilsin?", 1, 100, 5)
 fix_seed = st.sidebar.toggle("🔒 Fix seed (deterministik örnekleme)", value=False)
@@ -75,51 +100,125 @@ if st.sidebar.button("🎲 Yeniden örnekle"):
 
 uploaded = st.file_uploader("📤 CSV yükle (`;` ayraçlı)", type="csv")
 
-# ---------- Yardımcılar (mantık) ----------
-def _text(x): 
+###############################################################################
+#                            Helper Functions                                  #
+###############################################################################
+def _text(x):
+    """Safely convert a value to string."""
     return str(x or "")
 
-def _match(pattern, text):
+def _match(pattern: str, text: str) -> re.Match:
+    """Case-insensitive regex search that tolerates missing text."""
     return re.search(pattern, text or "", re.IGNORECASE)
 
-def has_data_tag(steps_text:str) -> bool:
-    # Eski kural: satır başında "Data:" etiketi
-    return bool(re.search(r'(?:^|\n|\r)\s*[-\s]*Data\s*:', steps_text or "", re.IGNORECASE))
+def extract_first(text: str, key: str) -> str:
+    """
+    Extract the first value of a given JSON-like key from the provided text.
 
-def extract_first(text, key):
-    # JSON benzeri içerikten "Key": "..." yakala
-    m = re.search(rf'"{key}"\s*:\s*"(.*?)"', text or "", re.IGNORECASE | re.DOTALL)
+    The search is case-insensitive and spans multiple lines.
+    Returns the captured value or an empty string if not found.
+    """
+    m = re.search(rf'"{re.escape(key)}"\s*:\s*"(.*?)"', text or "", re.IGNORECASE | re.DOTALL)
     return m.group(1).strip() if m else ""
 
-def has_data_present_for_scoring(steps_text:str) -> bool:
+def has_data_tag_with_value(steps_text: str) -> bool:
     """
-    Data kriteri için 'var' kabulü:
-    - "Data:" etiketi VARSA veya
-    - JSON benzeri içerikte "Data": "<boş olmayan>" alanı VARSA
-    - 'none', 'n/a', '-', 'yok' gibi değersiz girdiler hariç tutulur
+    Determine if a 'Data:' tag is present and populated.
+
+    A Data tag counts as present only when there is content after the colon on the same
+    line.  Leading dashes and spaces are ignored.  Empty or meaningless values
+    such as '-', 'none', 'n/a', etc. are not considered valid.
     """
-    if has_data_tag(steps_text):
-        return True
-    matches = re.findall(r'"Data"\s*:\s*"(.*?)"', steps_text or "", re.IGNORECASE | re.DOTALL)
+    pattern = re.compile(r'(?:^|\r?\n)\s*[-\s]*Data\s*:\s*(.*)', re.IGNORECASE)
     meaningless = {"", "-", "—", "none", "n/a", "na", "null", "yok"}
-    for m in matches:
-        val = re.sub(r'\s+', ' ', (m or "")).strip().lower()
-        if val not in meaningless and len(val) > 0:
+    for m in pattern.finditer(steps_text or ""):
+        val = (m.group(1) or "").strip().lower()
+        val_norm = re.sub(r'\s+', ' ', val)
+        if val_norm not in meaningless and len(val_norm) > 0:
             return True
     return False
 
-def scan_data_signals(text:str):
+def has_data_json_field_with_value(steps_text: str) -> bool:
+    """
+    Determine if a JSON-like 'Data' field is present and non-empty.
+
+    Matches "Data": "<value>" occurrences.  Values consisting solely of whitespace or
+    meaningless tokens are ignored.
+    """
+    meaningless = {"", "-", "—", "none", "n/a", "na", "null", "yok"}
+    matches = re.findall(r'"Data"\s*:\s*"(.*?)"', steps_text or "", re.IGNORECASE | re.DOTALL)
+    for m in matches:
+        val_norm = re.sub(r'\s+', ' ', (m or "").strip()).lower()
+        if val_norm not in meaningless and len(val_norm) > 0:
+            return True
+    return False
+
+def has_data_present_for_scoring(steps_text: str) -> bool:
+    """
+    Return True only if the 'Data:' tag or JSON 'Data' field is present with a value.
+    An empty tag or empty field no longer qualifies.
+    """
+    return has_data_tag_with_value(steps_text) or has_data_json_field_with_value(steps_text)
+
+def has_precond_tag_with_value(steps_text: str) -> bool:
+    """
+    Detect an explicit precondition label populated with content.
+
+    Looks for 'Precondition:' at the beginning of a line followed by meaningful content.
+    """
+    pattern = re.compile(r'(?:^|\r?\n)\s*[-\s]*Precondition\s*:\s*(.*)', re.IGNORECASE)
+    meaningless = {"", "-", "—", "none", "n/a", "na", "null", "yok"}
+    for m in pattern.finditer(steps_text or ""):
+        val = (m.group(1) or "").strip().lower()
+        val_norm = re.sub(r'\s+', ' ', val)
+        if val_norm not in meaningless and len(val_norm) > 0:
+            return True
+    return False
+
+def has_precond_json_field_with_value(steps_text: str) -> bool:
+    """
+    Detect a JSON-like 'Precondition' field with non-empty value.
+    """
+    meaningless = {"", "-", "—", "none", "n/a", "na", "null", "yok"}
+    matches = re.findall(r'"Precondition"\s*:\s*"(.*?)"', steps_text or "", re.IGNORECASE | re.DOTALL)
+    for m in matches:
+        val_norm = re.sub(r'\s+', ' ', (m or "").strip()).lower()
+        if val_norm not in meaningless and len(val_norm) > 0:
+            return True
+    return False
+
+def has_precond_present_for_scoring(steps_text: str) -> bool:
+    """
+    Return True if a precondition is explicitly provided and non-empty.
+    """
+    return has_precond_tag_with_value(steps_text) or has_precond_json_field_with_value(steps_text)
+
+def scan_data_signals(text: str):
+    """
+    Identify heuristics that suggest the test case requires data.
+
+    Signals include SQL keywords, JSON bodies, user identifiers and HTTP payload indicators.
+    The function returns a list of unique signal names.
+    """
     t = (text or "").lower()
     signals = []
     if _match(r'\b(select|insert|update|delete)\b', t): signals.append("SQL")
-    if _match(r'\b(json|payload|body|request|response|headers|content-type)\b', t) and _match(r'"\w+"\s*:\s*".+?"', t): signals.append("JSON body")
+    if _match(r'\b(json|payload|body|request|response|headers|content-type)\b', t) and \
+       _match(r'"\w+"\s*:\s*".+?"', t): signals.append("JSON body")
     if _match(r'\b(msisdn|token|iban|imei|email|username|password|user[_\-]?id|subscriber)\b', t): signals.append("Kimlik alanı")
     if _match(r'\b(post|put|patch)\b', t) and _match(r'\b(body|payload)\b', t): signals.append("POST payload")
     if _match(r'<\s*(msisdn|token|iban|imei|email|username|password|user[_\-]?id)\s*>', t) or \
-       _match(r'\{\s*(msisdn|token|iban|imei|email|username|password|user[_\-]?id)\s*\}', t): signals.append("Placeholder(ID)")
+       _match(r'\{\s*(msisdn|token|iban|imei|email|username|password|user[_\-]?id)\s*\}', t):
+        signals.append("Placeholder(ID)")
     return signals
 
-def scan_precond_signals(text:str):
+def scan_precond_signals(text: str):
+    """
+    Identify heuristics that suggest the test case requires a precondition.
+
+    Signals include mentions of login/authentication, existing subscriptions/users, setup,
+    environment configuration or feature flags.
+    """
     t = (text or "").lower()
     signals = []
     if _match(r'\bprecondition\b|ön\s*koşul|given .*already', t): signals.append("Precondition ifadesi")
@@ -129,44 +228,78 @@ def scan_precond_signals(text:str):
     if _match(r'\b(seed|setup|config(ure|)|feature flag|whitelist|allowlist|role|permission)\b', t): signals.append("Ortam/Ayar/Yetki")
     return signals
 
-def decide_data_needed(summary:str, steps_text:str):
+def decide_data_needed(summary: str, steps_text: str) -> bool:
     """
-    Data gerçekten gerekli mi?
-    - 'Data:' etiketi **veya** JSON 'Data' alanı doluysa → doğrudan GEREKLİ.
-    - Aksi halde, güçlü sinyal sayısı ≥ 2 ise GEREKLİ.
+    Determine whether the test case logically requires data.
+
+    Data is considered necessary if:
+        * The tester explicitly provides data (Data tag or JSON Data field), OR
+        * Strong signals from the summary/steps indicate that data is involved
+          (e.g. presence of multiple data signals like SQL operations, payloads, etc.).
     """
     combined = (summary or "") + "\n" + (steps_text or "")
-    data_field = extract_first(steps_text, "Data")
-    if has_data_present_for_scoring(steps_text) or (data_field.strip() != ""):
+    # If tester supplied data content, definitely needed.
+    if has_data_present_for_scoring(steps_text):
         return True
+    # Otherwise rely on heuristics: at least 2 distinct signals -> requires data.
     signals = scan_data_signals(combined)
     return len(set(signals)) >= 2
 
-def decide_precond_needed(summary:str, steps_text:str):
+def decide_precond_needed(summary: str, steps_text: str) -> bool:
+    """
+    Determine whether the test case logically requires a precondition.
+
+    A precondition is considered necessary if:
+        * The tester explicitly filled a precondition field/tag, OR
+        * At least one precondition signal is detected in the summary/steps.
+    """
     combined = (summary or "") + "\n" + (steps_text or "")
+    if has_precond_present_for_scoring(steps_text):
+        return True
     signals = scan_precond_signals(combined)
     return len(set(signals)) >= 1
 
-def choose_table(summary, steps_text):
+def choose_table(summary: str, steps_text: str):
+    """
+    Classify the test case into one of the tables A, B, C or D based on data and precondition needs.
+
+    Returns:
+        table: str -> one of "A","B","C","D"
+        base:  int -> base point value for each criterion in the table
+        active: list[int] -> list of criterion indices to evaluate for scoring
+    """
     data_needed = decide_data_needed(summary, steps_text)
     pre_needed = decide_precond_needed(summary, steps_text)
+
+    # Both needed -> Table D
     if data_needed and pre_needed:
         return "D", 14, [1,2,3,4,5,6,7]
+    # Only data needed -> Table C
     if data_needed:
         return "C", 17, [1,2,3,5,6,7]
+    # Only precondition needed -> Table B
     if pre_needed:
         return "B", 17, [1,2,4,5,6,7]
+    # Neither needed -> Table A
     return "A", 20, [1,2,5,6,7]
 
 def score_one(row):
+    """
+    Score a single test case row and return a dictionary of scoring details.
+
+    Each criterion is evaluated only if it is active for the table to which the
+    case belongs.  The total is the sum of points awarded for active criteria.
+    """
     key = _text(row.get('Issue key') or row.get('Issue Key'))
     summary = _text(row.get('Summary'))
     priority = _text(row.get('Priority')).lower()
     steps_text = _text(row.get('Custom field (Manual Test Steps)'))
 
+    # Extract Action and Expected result from JSON-like steps text
     action = extract_first(steps_text, "Action")
     expected = extract_first(steps_text, "Expected Result")
 
+    # Determine table classification and base point value
     table, base, active = choose_table(summary, steps_text)
 
     pts, notes, total = {}, [], 0
@@ -187,7 +320,7 @@ def score_one(row):
         else:
             pts['Öncelik'] = base; notes.append("✅ Öncelik var"); total += base
 
-    # 3) Data – etiket **veya** JSON 'Data' alanı doluysa puan
+    # 3) Data – must have non-empty tag or JSON field for points
     if 3 in active:
         if has_data_present_for_scoring(steps_text):
             pts['Data'] = base; notes.append("✅ Data mevcut (etiket/alan)"); total += base
@@ -196,7 +329,7 @@ def score_one(row):
 
     # 4) Ön Koşul
     if 4 in active:
-        if decide_precond_needed(summary, steps_text):
+        if has_precond_present_for_scoring(steps_text):
             pts['Ön Koşul'] = base; notes.append("✅ Ön koşul belirtilmiş/ima edilmiş"); total += base
         else:
             pts['Ön Koşul'] = 0; notes.append("❌ Ön koşul eksik")
@@ -237,8 +370,11 @@ def score_one(row):
         "Açıklama": " | ".join(notes),
     }
 
-# ---------- Çalıştır ----------
+###############################################################################
+#                                Main Logic                                    #
+###############################################################################
 if uploaded:
+    # Seed random sampling consistently if requested
     if fix_seed:
         random.seed(20250831 + st.session_state.reroll)
     else:
@@ -249,15 +385,17 @@ if uploaded:
     except Exception:
         df = pd.read_csv(uploaded)
 
+    # Sample test cases for evaluation
     if len(df) > sample_size:
         idx = random.sample(range(len(df)), sample_size)
         sample = df.iloc[idx].copy()
     else:
         sample = df.copy()
 
+    # Compute scoring
     results = sample.apply(score_one, axis=1, result_type='expand')
 
-    # ---------- KPI Özetleri ----------
+    # ---------- KPI Summaries ----------
     total_cases = len(results)
     avg_score = round(results["Toplam Puan"].mean() if total_cases else 0, 1)
     min_score = int(results["Toplam Puan"].min()) if total_cases else 0
@@ -277,7 +415,7 @@ if uploaded:
     st.markdown("### 📈 Tablo Dağılımı")
     st.bar_chart(dist)
 
-    # ---------- Skor yüzdesi + tablo ----------
+    # ---------- Score percentage + table ----------
     MAX_BY_TABLE = {"A": 100, "B": 102, "C": 102, "D": 98}
     results["Maks Puan"] = results["Tablo"].map(MAX_BY_TABLE).fillna(100)
     results["Skor %"] = (results["Toplam Puan"] / results["Maks Puan"]).clip(0,1) * 100
@@ -307,7 +445,7 @@ if uploaded:
         mime="text/csv"
     )
 
-    # ---------- Detay Kartları ----------
+    # ---------- Detail Cards ----------
     st.markdown("## 📝 Detaylar")
     for _, r in results.iterrows():
         max_pt = MAX_BY_TABLE.get(r["Tablo"], 100)
