@@ -1,17 +1,14 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v2.9.6
-# - Tablo (A/B/C/D) İHTİYAÇ analiziyle belirlenir:
-#   A: Data/Pre gerekmiyor
-#   B: Pre gerekli (CSV boş olsa da)
-#   C: Data gerekli (steps’te yazılmasa da)
-#   D: Data + Pre gerekli (yazılmış olmasa da)
-# - OVERRIDE: Hem Data (steps’te gerçek) hem Pre (CSV iki sütundan biri dolu) YAZILMIŞSA → D
+# 📌 Test Case Evaluator v2.9.7
+# - Tablo (A/B/C/D) İHTİYAÇ analiziyle belirlenir (summary + steps + pre-association metni)
+#   A: Data/Pre gerekmiyor • B: Pre gerekli • C: Data gerekli • D: Data+Pre gerekli
+# - OVERRIDE: Hem Data (steps’te anlamlı) hem Pre (CSV’de iki sütundan biri dolu) yazılmışsa → D
 # - PUANLAMA:
-#   • Pre puanı: SADECE aşağıdaki iki CSV sütunu doluysa verilir:
-#       - Custom field (Tests association with a Pre-Condition)
-#       - Custom field (Pre-Conditions association with a Test)
-#   • Data/Expected puanı: steps’te gerçek/anlamlı varlığa göre
-# - Debug modu: tetiklenen sinyaller ve kararlar gösterilir.
+#   • Pre puanı: yalnızca CSV’deki iki sütundan biri doluysa
+#   • Data/Expected puanı: steps/expected’ta gerçek/anlamlı varlığa göre
+#   • ✏️ Expected yazım cezası: Expected’ta “-di’li geçmiş zaman” tespit edilirse 1–5 arası kesinti
+# - Stepler: tek blok + çok adım/edilgen ise 1 puan
+# - Debug: tetiklenen sinyaller + Expected yazım isabet/ceza bilgisi
 
 import streamlit as st
 import pandas as pd
@@ -79,7 +76,8 @@ with st.expander("📌 Kurallar (özet)"):
 - **Puanlar:** A=5×20, B=6×17, C=6×17, D=7×14  
 - **Pre puanı:** **Sadece** şu iki CSV alanından biri **boşluk-harici doluysa** verilir:  
   `Custom field (Tests association with a Pre-Condition)` veya `Custom field (Pre-Conditions association with a Test)`  
-- **D override:** Hem Data (steps) hem Pre (CSV) yazılıysa → **D**.
+- **D override:** Hem Data (steps) hem Pre (CSV) yazılıysa → **D**.  
+- **✏️ Expected yazım cezası:** Expected Result geçmiş/olup-bitti anlatımı içerirse 1–5 puan kesilir.
 """)
 
 # ---------- Sidebar ----------
@@ -175,7 +173,6 @@ PRECOND_EXACT_COLS = [
 ]
 
 def precondition_provided_from_csv(row, df_cols) -> bool:
-    """İki sütundan biri gerçekten DOLU ise True (NaN değil, sadece boşluk değil)."""
     for col in PRECOND_EXACT_COLS:
         if col in df_cols:
             val = _cell(row.get(col))
@@ -184,7 +181,6 @@ def precondition_provided_from_csv(row, df_cols) -> bool:
     return False
 
 def get_pre_assoc_text(row, df_cols) -> str:
-    """İhtiyaç analizinde 'pre alanlarını okumak' için CSV’deki association metnini de kat."""
     texts = []
     for col in PRECOND_EXACT_COLS:
         if col in df_cols:
@@ -195,12 +191,9 @@ def get_pre_assoc_text(row, df_cols) -> str:
 def scan_precond_signals(text: str):
     t = (text or "").lower()
     s = []
-    # doğrudan ifade ve zorunluluk kalıpları
     if _match(r'\b(pre[- ]?condition|ön\s*koşul|ön\s*şart)\b', t): s.append("Precondition ifadesi")
     if _match(r'\b(gerek(ir|li)|zorunlu|olmalı|required|must|should)\b.*\b(login|auth|role|permission|config|seed|setup)\b', t): s.append("Zorunluluk ifadesi")
-    # login/auth
     if _match(r'\b(logged in|login|giriş yap(mış|ın)|authenticated|auth|session)\b', t): s.append("Login/Auth")
-    # abonelik / mevcut hesap / ortam
     if _match(r'\b(subscription|abonelik)\b.*\b(aktif|var|existing)\b', t): s.append("Abonelik aktif")
     if _match(r'\bexisting user|mevcut kullanıcı|mevcut hesap\b', t): s.append("Mevcut kullanıcı/hesap")
     if _match(r'\b(seed|setup|config(ure)?|feature flag|whitelist|allowlist|role|permission|yetki)\b', t): s.append("Ortam/Ayar/Yetki")
@@ -235,7 +228,6 @@ def choose_table(summary: str, steps_text: str, pre_assoc_text: str, *, data_wri
     data_needed, data_sigs = decide_data_needed(summary, steps_text)
     pre_needed,  pre_sigs  = decide_precond_needed(summary, steps_text, pre_assoc_text)
 
-    # OVERRIDE: hem data YAZILMIŞ (steps) hem pre YAZILMIŞ (CSV) ise → D
     if data_written and pre_written_csv:
         decision = ("D", 14, [1,2,3,4,5,6,7])
     else:
@@ -299,6 +291,38 @@ def has_expected_present(steps_text: str) -> bool:
     blocks = extract_expected_blocks(steps_text)
     return any(is_meaningful_expected(b) for b in blocks)
 
+# ✏️ ---- EXPECTED YAZIM KALİTESİ CEZASI ----
+# Sık görülen geçmiş zaman/olup-bitti anlatımı (3. tekil çoğunda -di/-dı/-du/-dü, pasif -ildi/-ıldı/-uldu/-üldü, vs.)
+_EXPECT_PAST_WORDS = r"(oldu|olmadı|gerçekleşti|gerçekleşmedi|yapıldı|yapılmadı|edildi|edilmedi|sağlandı|sağlanmadı|tamamlandı|tamamlanmadı|görüldü|görülmedi|döndü|başarılı oldu|başarısız oldu|hata verdi|gösterildi|gösterilmedi)"
+_EXPECT_PAST_REGEXES = [
+    re.compile(rf"\b{_EXPECT_PAST_WORDS}\b", re.I),
+    # pasif geçmiş -ildi/-ıldı/-uldu/-üldü ve -ndi varyasyonları
+    re.compile(r"\b\w+(ildi|ıldı|uldu|üldü|ndi|ndı|ndu|ndü)\b", re.I),
+    # olumsuz geçmiş -medi/-madı
+    re.compile(r"\b\w+(medi|madı)\b", re.I),
+]
+
+def expected_style_hits(text: str) -> int:
+    t = _cleanup_html(text or "").lower()
+    hits = 0
+    for rx in _EXPECT_PAST_REGEXES:
+        hits += len(rx.findall(t))
+    return hits
+
+def expected_style_penalty(blocks: list[str]) -> tuple[int, int]:
+    """Return (hits, penalty 0–5)."""
+    txt = " . ".join(blocks or [])
+    hits = expected_style_hits(txt)
+    if hits <= 0: 
+        return 0, 0
+    # isabete göre ceza merdiveni
+    if hits == 1: pen = 1
+    elif hits == 2: pen = 2
+    elif hits == 3: pen = 3
+    elif hits <= 5: pen = 4
+    else: pen = 5
+    return hits, pen
+
 # ---- Stepler kuralı ----
 PASSIVE_PATTERNS = re.compile(
     r'\b(yapıldı|edildi|gerçekleştirildi|sağlandı|tamamlandı|kontrol edildi|yapılır|edilir|gerçekleştirilir|sağlanır|tamamlanır|kontrol edilir)\b',
@@ -329,7 +353,7 @@ def score_one(row, df_cols, debug=False):
 
     # GERÇEK varlıklar (puanlama & override için)
     data_present_for_scoring = has_data_present_for_scoring(steps_text)
-    precond_provided_csv     = precondition_provided_from_csv(row, df_cols)   # <-- sadece CSV doluluğu
+    precond_provided_csv     = precondition_provided_from_csv(row, df_cols)   # sadece CSV doluluğu
     expected_present         = has_expected_present(steps_text)
     pre_assoc_text           = get_pre_assoc_text(row, df_cols)
 
@@ -338,7 +362,7 @@ def score_one(row, df_cols, debug=False):
         table, base, active, data_sigs, pre_sigs, data_needed, pre_needed = choose_table(
             summary, steps_text, pre_assoc_text,
             data_written=data_present_for_scoring,
-            pre_written_csv=precond_provided_csv,
+            pre_written_csv=precond_provided_from_csv(row, df_cols),
             debug=True
         )
     else:
@@ -409,10 +433,18 @@ def score_one(row, df_cols, debug=False):
         else:
             pts['Client'] = 0; notes.append("❌ Client bilgisi eksik")
 
-    # 7) Expected
+    # 7) Expected (+ yazım cezası)
+    exp_blocks = extract_expected_blocks(steps_text)
     if 7 in active:
         if expected_present:
-            pts['Expected'] = base; notes.append("✅ Expected mevcut (en az bir adım)"); total += base
+            pts['Expected'] = base
+            hits, pen = expected_style_penalty(exp_blocks)
+            if pen > 0:
+                pts['Expected'] = max(0, pts['Expected'] - pen)
+                notes.append(f"✏️ Expected yazımı (geçmiş zaman) -{pen} (isabet: {hits})")
+            else:
+                notes.append("✅ Expected mevcut (en az bir adım)")
+            total += pts['Expected']
         else:
             pts['Expected'] = 0; notes.append("❌ Expected result eksik")
 
@@ -421,6 +453,7 @@ def score_one(row, df_cols, debug=False):
         **pts, "Açıklama": " | ".join(notes)
     }
     if debug:
+        hits_dbg, pen_dbg = expected_style_penalty(exp_blocks)
         result.update({
             "_data_sigs": ", ".join(sorted(data_sigs)) or "-",
             "_pre_sigs":  ", ".join(sorted(pre_sigs)) or "-",
@@ -428,6 +461,8 @@ def score_one(row, df_cols, debug=False):
             "_pre_needed":  pre_needed,
             "_data_written": data_present_for_scoring,
             "_pre_written_csv": precond_provided_csv,
+            "_exp_hits": hits_dbg,
+            "_exp_penalty": pen_dbg,
         })
     return result
 
@@ -467,7 +502,7 @@ if uploaded:
 
     show_cols = ["Key","Summary","Tablo","Toplam Puan","Skor %","Açıklama"]
     if show_debug:
-        show_cols += ["_data_needed","_pre_needed","_data_written","_pre_written_csv","_data_sigs","_pre_sigs"]
+        show_cols += ["_data_needed","_pre_needed","_data_written","_pre_written_csv","_data_sigs","_pre_sigs","_exp_hits","_exp_penalty"]
 
     st.markdown("## 📊 Değerlendirme Tablosu")
     st.dataframe(
@@ -487,6 +522,8 @@ if uploaded:
             "_pre_written_csv": st.column_config.TextColumn("has:pre(CSV)"),
             "_data_sigs": st.column_config.TextColumn("Data sinyalleri"),
             "_pre_sigs": st.column_config.TextColumn("Pre sinyalleri"),
+            "_exp_hits": st.column_config.NumberColumn("Exp yazım isabet"),
+            "_exp_penalty": st.column_config.NumberColumn("Exp ceza (1-5)"),
         }
     )
 
@@ -530,3 +567,4 @@ if uploaded:
                 st.markdown(f"- need:data: `{r.get('_data_needed')}` — sinyaller: {r.get('_data_sigs')}")
                 st.markdown(f"- need:pre : `{r.get('_pre_needed')}` — sinyaller: {r.get('_pre_sigs')}")
                 st.markdown(f"- has:data(steps): `{r.get('_data_written')}` • has:pre(CSV): `{r.get('_pre_written_csv')}`")
+                st.markdown(f"- ✏️ Expected yazım isabet: `{r.get('_exp_hits')}`, ceza: `{r.get('_exp_penalty')}`")
