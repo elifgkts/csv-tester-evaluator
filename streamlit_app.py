@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import random
+import re
 
 st.set_page_config(page_title="Test Case Değerlendirici", layout="wide")
 st.title("📋 Test Case Kalite Değerlendirmesi — QA Manager Gözünden")
@@ -9,7 +10,6 @@ Bu uygulama, manuel test caselerinizi **A, B, C veya D tablosuna** göre değerl
 Her test case'in ait olduğu tablo, **senaryo içeriğine göre otomatik belirlenir** ve 7 kritere göre puanlama yapılır.
 """)
 
-# 📌 Kullanım Kuralları
 with st.expander("📌 Değerlendirme Kuralları ve Kriter Açıklamaları"):
     st.markdown("""
 **CSV formatı:** CSV dosyası `;` (noktalı virgül) ile ayrılmış olmalıdır.
@@ -43,7 +43,6 @@ with st.expander("📌 Değerlendirme Kuralları ve Kriter Açıklamaları"):
 - Test başlığı kötü yazılmışsa yine **tam sıfır değil**, 1-5 puanlık bir kırıntı puan verilir.
 """)
 
-# 📤 CSV Yükleme
 uploaded_file = st.file_uploader("📤 CSV dosyanızı yükleyin", type="csv")
 
 if uploaded_file:
@@ -60,8 +59,6 @@ if uploaded_file:
         labels = str(row['Labels']).lower()
         steps_field = str(row['Custom field (Manual Test Steps)'])
 
-        # Step alanını JSON gibi ele al (Action/Data/Expected Result çıkar)
-        import re
         action_match = re.search(r'"Action"\s*:\s*"(.*?)"', steps_field)
         data_match = re.search(r'"Data"\s*:\s*"(.*?)"', steps_field)
         expected_match = re.search(r'"Expected Result"\s*:\s*"(.*?)"', steps_field)
@@ -70,7 +67,6 @@ if uploaded_file:
         data = data_match.group(1) if data_match else ""
         expected = expected_match.group(1) if expected_match else ""
 
-        # Tablo belirleme
         testdata_needed = bool(re.search(r'data:|msisdn|token|auth|account|payload|config', steps_field, re.IGNORECASE))
         precondition_needed = 'precond' in labels
 
@@ -94,7 +90,7 @@ if uploaded_file:
         explanations = []
         total = 0
 
-        # Kriter 1: Test başlığı anlaşılır mı
+        # Kriter 1: Test başlığı
         if 1 in aktif_kriterler:
             if len(summary) < 10:
                 explanations.append("❌ Test başlığı çok kısa, yeterli değil (0 puan)")
@@ -105,7 +101,7 @@ if uploaded_file:
                 explanations.append("✅ Test başlığı anlaşılır (tam puan)")
                 total += base
 
-        # Kriter 2: Öncelik bilgisi girilmiş mi
+        # Kriter 2: Priority
         if 2 in aktif_kriterler:
             if priority in ["", "null", "none"]:
                 explanations.append("❌ Öncelik bilgisi eksik")
@@ -121,7 +117,7 @@ if uploaded_file:
             else:
                 explanations.append("❌ Test datası eksik")
 
-        # Kriter 4: Ön koşul
+        # Kriter 4: Precondition
         if 4 in aktif_kriterler:
             if precondition_needed:
                 explanations.append("✅ Ön koşul gerekli ve label'da belirtilmiş")
@@ -129,7 +125,7 @@ if uploaded_file:
             else:
                 explanations.append("❌ Ön koşul gerekli ancak eksik")
 
-        # Kriter 5: Stepler var mı ve doğru ayrılmış mı
+        # Kriter 5: Stepler
         if 5 in aktif_kriterler:
             if not action.strip():
                 explanations.append("❌ Step alanı tamamen boş")
@@ -140,7 +136,7 @@ if uploaded_file:
                 explanations.append("✅ Stepler doğru şekilde ayrılmış")
                 total += base
 
-        # Kriter 6: Client bilgisi var mı
+        # Kriter 6: Client bilgisi
         if 6 in aktif_kriterler:
             client_keywords = ["android", "ios", "web", "mac", "windows"]
             if any(kw in summary.lower() for kw in client_keywords) or any(kw in action.lower() for kw in client_keywords):
@@ -149,7 +145,7 @@ if uploaded_file:
             else:
                 explanations.append("❌ Hangi clientta koşulacağı belirtilmemiş")
 
-        # Kriter 7: Expected Result var mı
+        # Kriter 7: Expected result
         if 7 in aktif_kriterler:
             if not expected.strip():
                 explanations.append("❌ Expected result tamamen boş")
@@ -171,8 +167,4 @@ if uploaded_file:
     sonuçlar = sampled_df.apply(score_case, axis=1, result_type='expand')
 
     st.markdown("## 📊 Değerlendirme Sonuçları")
-    st.dataframe(sonuçlar)
-
-    import io
-    csv = sonuçlar.to_csv(index=False, sep=';', encoding='utf-8')
-    st.download_button("📥 Sonuçları indir (CSV)", data=csv, file_name="testcase_skorlari.csv", mime="text/csv")
+    st.dataframe(sonuçlar, use_container_width=True)
