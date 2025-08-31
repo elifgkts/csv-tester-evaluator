@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v2.3
-# - Dark mode uyumlu CSS
-# - Data/Precondition: gerçek içerik kontrolü (HTML/JSON/blok başlıkları)
-# - Doğru tablo (A/B/C/D) seçimi için sinyal analizi
-# - Stepler: yapılandırma algısı (numaralı/bullet’lı/kısa satırlar) + adil “birleşik” kırpması
-# - KPI, tablo, CSV indirme ve Detay Kartları + isteğe bağlı debug görünümü
+# 📌 Test Case Evaluator v2.4
+# - Dark mode CSS
+# - Data/Precondition: gerçek içerik kontrolü (HTML/JSON/blok)
+# - Expected Result: TÜM adımlar taranır; herhangi birinde varsa puan
+# - Stepler: yapı algısı + adil “birleşik” kırpması
+# - KPI, tablo, CSV ve Detay Kartları + debug
 
 import streamlit as st
 import pandas as pd
@@ -104,7 +104,7 @@ with st.expander("📌 Kurallar (özet)"):
 st.sidebar.header("⚙️ Ayarlar")
 sample_size = st.sidebar.slider("Kaç test case değerlendirilsin?", 1, 100, 5)
 fix_seed = st.sidebar.toggle("🔒 Fix seed (deterministik örnekleme)", value=False)
-show_debug = st.sidebar.toggle("🛠 Debug (Data/Action satırları)", value=False)
+show_debug = st.sidebar.toggle("🛠 Debug (Data/Action/Expected)", value=False)
 if "reroll" not in st.session_state: st.session_state.reroll = 0
 if st.sidebar.button("🎲 Yeniden örnekle"): st.session_state.reroll += 1
 
@@ -229,7 +229,6 @@ def _split_actions_lines(action_text: str) -> list[str]:
     t = _cleanup_html(action_text or "")
     lines = re.split(r'(?:\r?\n)+', t.strip())
     if len(lines) <= 1:
-        # bazıları ; ile ayırıyor
         lines = re.split(r'\s*;\s*', t.strip())
     lines = [ln.strip() for ln in lines if ln and not _is_meaningless(ln)]
     return lines
@@ -248,6 +247,41 @@ def actions_are_well_structured(action_text: str) -> bool:
                 return True
     return False
 
+# ---- EXPECTED: tüm adımlardan topla ----
+def extract_expected_blocks(steps_text: str) -> list[str]:
+    blocks = []
+    # JSON "Expected Result":"..."
+    for m in re.finditer(r'"Expected\s*Result"\s*:\s*"(?:\\.|[^"])*"', steps_text or "", re.IGNORECASE | re.DOTALL):
+        raw = m.group(0)
+        val = re.sub(r'^.*?":\s*"(.*)"$', r'\1', raw, flags=re.DOTALL)
+        val = val.replace('\\"', '"').strip()
+        if val:
+            blocks.append(val)
+    # HTML/metin: Expected Result başlığından bir sonraki başlığa
+    txt = _cleanup_html(steps_text)
+    pattern = re.compile(
+        r'(?:^|\n)\s*Expected\s*Result\s*:?\s*(.*?)\s*(?=(?:^|\n)\s*(?:Action|Data|Attachments?)\b|$)',
+        re.IGNORECASE | re.DOTALL
+    )
+    for m in pattern.finditer(txt):
+        val = m.group(1).strip()
+        if val:
+            blocks.append(val)
+    return [b for b in blocks if b.strip()]
+
+def is_meaningful_expected(value: str) -> bool:
+    if _is_meaningless(value):
+        return False
+    v = value.strip()
+    # sırf “None”/“Yok” olmayan her içerik kural olarak kabul; yine de çok kısa tek kelimeyi eleyelim
+    if len(re.sub(r'\s+', '', v)) < 2:
+        return False
+    return True
+
+def has_expected_present(steps_text: str) -> bool:
+    blocks = extract_expected_blocks(steps_text)
+    return any(is_meaningful_expected(b) for b in blocks)
+
 # ---------- Skorlama ----------
 def score_one(row):
     key = _text(row.get('Issue key') or row.get('Issue Key'))
@@ -255,8 +289,8 @@ def score_one(row):
     priority = _text(row.get('Priority')).lower()
     steps_text = _text(row.get('Custom field (Manual Test Steps)'))
 
-    action = extract_first(steps_text, "Action")
-    expected = extract_first(steps_text, "Expected Result")
+    action = extract_first(steps_text, "Action")  # yapısal kontrol için ilkini alıyoruz
+    expected_present = has_expected_present(steps_text)
 
     table, base, active = choose_table(summary, steps_text)
 
@@ -287,13 +321,12 @@ def score_one(row):
 
     # 4) Ön Koşul
     if 4 in active:
-        # Puan için gerçekten doldurulmuş precondition arıyoruz
         if has_precond_tag_with_value(steps_text):
             pts['Ön Koşul'] = base; notes.append("✅ Ön koşul belirtilmiş"); total += base
         else:
             pts['Ön Koşul'] = 0; notes.append("❌ Ön koşul eksik")
 
-    # 5) Stepler – önce yapı kontrolü, sonra 'birleşik' fallback
+    # 5) Stepler – yapı kontrolü + adil kırpma
     if 5 in active:
         if not (action or "").strip():
             pts['Stepler'] = 0; notes.append("❌ Stepler boş")
@@ -301,13 +334,11 @@ def score_one(row):
             if actions_are_well_structured(action):
                 pts['Stepler'] = base; notes.append("✅ Stepler ayrı ve düzgün"); total += base
             else:
-                # tek satır ve zincirli eylemler ise kırp
                 if re.search(r'(,|\bve\b|\bsonra\b|\bardından\b)', action, re.I):
                     kırp = 5 if base >= 17 else 3
                     pts['Stepler'] = max(base - kırp, 1)
                     notes.append(f"🔸 Birleşik ama mantıklı ({pts['Stepler']})"); total += pts['Stepler']
                 else:
-                    # ayrı satır yok ama kısa/temizse tam puan
                     if len(action.strip()) <= 120:
                         pts['Stepler'] = base; notes.append("✅ Stepler tek cümle ama okunaklı"); total += base
                     else:
@@ -322,19 +353,18 @@ def score_one(row):
         else:
             pts['Client'] = 0; notes.append("❌ Client bilgisi eksik")
 
-    # 7) Expected
+    # 7) Expected (HERHANGİ bir adımda varsa puan)
     if 7 in active:
-        if not (expected or "").strip():
-            pts['Expected'] = 0; notes.append("❌ Expected result eksik")
-        elif any(w in expected.lower() for w in ["test edilir","kontrol edilir"]):
-            pts['Expected'] = max(base-3, 1); notes.append(f"🔸 Expected zayıf ifade ({pts['Expected']})"); total += pts['Expected']
+        if expected_present:
+            pts['Expected'] = base; notes.append("✅ Expected mevcut (adımlardan en az birinde)")
+            total += base
         else:
-            pts['Expected'] = base; notes.append("✅ Expected düzgün"); total += base
+            pts['Expected'] = 0; notes.append("❌ Expected result eksik")
 
     return {
         "Key": key, "Summary": summary, "Tablo": table, "Toplam Puan": total,
         **pts, "Açıklama": " | ".join(notes),
-        "_raw_steps": steps_text, "_action": action  # debug için
+        "_raw_steps": steps_text, "_action": action  # debug amaçlı
     }
 
 # ---------- Çalıştır ----------
@@ -439,8 +469,11 @@ if uploaded:
             data_blocks = extract_data_blocks(r["_raw_steps"])
             data_pretty = " | ".join(escape(b) for b in data_blocks) if data_blocks else "—"
             action_lines = _split_actions_lines(r["_action"] or "")
+            expected_blocks = extract_expected_blocks(r["_raw_steps"])
+            exp_pretty = " | ".join(escape(b) for b in expected_blocks) if expected_blocks else "—"
             st.markdown(f"<small><strong>Data Blokları:</strong> {data_pretty}</small>", unsafe_allow_html=True)
             st.markdown(f"<small><strong>Action satırları:</strong> {escape(str(action_lines))}</small>", unsafe_allow_html=True)
+            st.markdown(f"<small><strong>Expected Blokları:</strong> {exp_pretty}</small>", unsafe_allow_html=True)
 
         st.markdown(f"🗒️ **Açıklamalar:** {r['Açıklama']}")
         st.markdown('</div>', unsafe_allow_html=True)
