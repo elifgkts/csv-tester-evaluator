@@ -94,7 +94,7 @@ with st.expander("📌 Kurallar (özet)"):
 
 # ---------- Sidebar Kontroller ----------
 st.sidebar.header("⚙️ Ayarlar")
-sample_size = st.sidebar.slider("Kaç test case değerlendirilsin?", 1, 100, 8)
+sample_size = st.sidebar.slider("Kaç test case değerlendirilsin?", 1, 100, 5)
 fix_seed = st.sidebar.toggle("🔒 Fix seed (deterministik örnekleme)", value=False)
 if "reroll" not in st.session_state:
     st.session_state.reroll = 0
