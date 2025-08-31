@@ -1,18 +1,24 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v2.9.3
-# - Precondition SADECE şu iki CSV sütunundan anlamlı içerik varsa var sayılır:
-#   • Custom field (Tests association with a Pre-Condition)
-#   • Custom field (Pre-Conditions association with a Test)
-# - Boş/işlevsiz değerler ([], {}, -, none, null, yok, yalnızca noktalama/boşluk) PUAN getirmez.
-# - Tablo tayini: içerik analizi (ihtiyaç) + override (hem data hem pre CSV doluysa → D)
-# - Data/Expected puanlaması steps’te gerçek varlığa göre; Pre yalnız CSV’den.
+# 📌 Test Case Evaluator v2.9.4
+# - Tablo (A/B/C/D) içerik analizi ile belirlenir (summary + steps)
+# - İSTİSNA: Case içinde hem Data hem Pre YAZILMIŞSA → doğrudan D
+#   • Data yazılmış: steps içinde anlamlı "Data" bloğu/SQL sinyali
+#   • Pre yazılmış: YALNIZCA CSV’deki İKİ sütundan biri boşluk-harici doluysa
+#     - Custom field (Tests association with a Pre-Condition)
+#     - Custom field (Pre-Conditions association with a Test)
+# - PUANLAMA:
+#   • Pre-Condition puanı: SADECE bu iki CSV sütunundan birinin doluluğuna göre
+#   • Data/Expected puanı: steps’te gerçek/anlamlı varlığa göre
+# - Tek Action bloğunda çok adım/edilgen ifade → Stepler = 1 puan
+# - UI/KPI/Dağılım/Detay kartları/CSV indirme
+# - Dosya yükleme: st.file_uploader
 
 import streamlit as st
 import pandas as pd
 import re
-import html
 from datetime import datetime
 
+# ---------- Sayfa & Stil ----------
 st.set_page_config(page_title="Test Case SLA", layout="wide")
 
 CUSTOM_CSS = """
@@ -34,7 +40,7 @@ CUSTOM_CSS = """
   }
 }
 #MainMenu, footer {visibility:hidden;}
-.app-hero{background:linear-gradient(135deg,#1f6feb 0%,#0ea5e9 100%);color:#fff;padding:18px 22px;border-radius:14px;margin-bottom:18px;box-shadow:0 8px 24px rgba(2,6,23,0.18)}
+.app-hero{background:linear-gradient(135deg,#1f6feb 0%, #0ea5e9 100%);color:#fff;padding:18px 22px;border-radius:14px;margin-bottom:18px;box-shadow:0 8px 24px rgba(2,6,23,0.18)}
 .app-hero h1{font-size:24px;margin:0 0 6px 0;line-height:1.2;color:#fff}
 .app-hero p{margin:0;opacity:.95;color:#fff}
 .kpi{border-radius:14px;padding:14px;background:var(--bg-card);border:1px solid var(--border);box-shadow:0 4px 16px rgba(2,6,23,0.06)}
@@ -71,7 +77,7 @@ with st.expander("📌 Kurallar (özet)"):
 - **Gerekli sütunlar:** `Issue key`/`Issue Key`, `Summary`, `Priority`, `Labels`, `Custom field (Manual Test Steps)`  
 - **Tablo mantığı (senaryoya göre, içerik analizi):** A: Data/Pre yok • B: Pre gerekli • C: Data gerekli • D: Data+Pre gerekli  
 - **Puanlar:** A=5×20, B=6×17, C=6×17, D=7×14  
-- **Pre-Condition puanı:** **Sadece** şu CSV alanlardan **anlamlı içerik** varsa verilir:  
+- **Pre-Condition puanı:** **Sadece** şu CSV alanlardan biri **boşluk-harici doluysa** verilir:  
   `Custom field (Tests association with a Pre-Condition)` **veya** `Custom field (Pre-Conditions association with a Test)`.
 """)
 
@@ -88,8 +94,23 @@ if st.sidebar.button("🎲 Yeniden örnekle"):
 uploaded = st.file_uploader("📤 CSV yükle (`;` ayraçlı)", type="csv")
 
 # ---------- Yardımcılar ----------
-def _text(x): return str(x or "")
-def _match(pattern, text): return re.search(pattern, text or "", re.IGNORECASE)
+def _text(x): 
+    return str(x or "")
+
+def _cell(x) -> str:
+    """NaN/None güvenli hücre okuma: NaN -> ''."""
+    try:
+        if pd.isna(x):
+            return ""
+    except Exception:
+        pass
+    return str(x or "")
+
+def _is_blank_after_strip(val: str) -> bool:
+    return len((val or "").strip()) == 0
+
+def _match(pattern, text): 
+    return re.search(pattern, text or "", re.IGNORECASE)
 
 def _normalize_newlines(s: str) -> str:
     return (s or "").replace("\r\n","\n").replace("\r","\n")
@@ -105,7 +126,6 @@ def _is_meaningless(val: str) -> bool:
     meaningless = {"", "-", "—", "none", "n/a", "na", "null", "yok"}
     v = re.sub(r'\s+', ' ', (val or '')).strip().lower()
     if v in meaningless: return True
-    # sadece boşluk/noktalama/parantez vs ⇒ anlamsız
     if re.fullmatch(r'[\s\[\]\{\}\(\)\.,;:\-_/\\]*', v or ""): return True
     return False
 
@@ -148,34 +168,22 @@ def has_data_present_for_scoring(steps_text: str) -> bool:
     if re.search(r'\b(select|insert|update|delete)\b', steps_text or "", re.I): return True
     return False
 
-# ---- PRECONDITION (YALNIZCA CSV’den, anlamlı içerik kontrolüyle) ----
+# ---- PRECONDITION (YALNIZCA CSV’den, iki sütunun sade doluluk kontrolü) ----
 PRECOND_EXACT_COLS = [
     "Custom field (Tests association with a Pre-Condition)",
     "Custom field (Pre-Conditions association with a Test)",
 ]
 
-def _pre_csv_has_meaningful(val: str) -> bool:
-    # HTML çöz, boşlukları normalize et
-    s = html.unescape(_text(val)).replace("\u00a0", " ")
-    s = _cleanup_html(s).strip()
-    if _is_meaningless(s): return False
-    # “[]”, “{}”, “()”, sadece virgül/noktalama → boş
-    if re.fullmatch(r'[\[\]\{\}\(\)\s\.,;:/\\\-_]*', s): return False
-    # Sık görülen issue key deseni (Jira): ABC-123
-    if re.search(r'\b[A-Z][A-Z0-9_]+-\d+\b', s): return True
-    # En az iki alfasayısal karakter (örn. gerçek bir ad/ID)
-    if re.search(r'[A-Za-zÇĞİÖŞÜçğıöşü0-9]{2,}', s): return True
+def precondition_provided_from_csv(row, df_cols) -> bool:
+    """İki sütundan biri gerçekten DOLU ise True (NaN değil, sadece boşluk değil)."""
+    for col in PRECOND_EXACT_COLS:
+        if col in df_cols:
+            val = _cell(row.get(col))
+            if not _is_blank_after_strip(val):
+                return True
     return False
 
-def precondition_provided_from_csv(row, df_cols) -> bool:
-    found = False
-    for col in PRECOND_EXACT_COLS:
-        if col in df_cols and _pre_csv_has_meaningful(row.get(col)):
-            found = True
-            break
-    return found
-
-# ---- İçerik sinyalleri (İHTİYAÇ analizi için) ----
+# ---- İçerik sinyalleri (ihtiyaç analizi) ----
 def scan_precond_signals(text: str):
     t = (text or "").lower()
     s = []
@@ -197,6 +205,7 @@ def scan_data_signals(text: str):
        _match(r'\\{\\s*(msisdn|token|iban|imei|email|username|password|user[_\\-]?id)\\s*\\}', t): s.append("Placeholder(ID)")
     return list(set(s))
 
+# ---- İhtiyaç analizi ----
 def decide_data_needed(summary: str, steps_text: str) -> bool:
     combined = (summary or "") + "\n" + (steps_text or "")
     if len(scan_data_signals(combined)) >= 2: return True
@@ -209,8 +218,10 @@ def decide_precond_needed(summary: str, steps_text: str) -> bool:
 
 # ---- TABLO KARARI (override + içerik) ----
 def choose_table(summary: str, steps_text: str, *, data_written: bool, pre_written_csv: bool):
+    # OVERRIDE: Hem Data hem Pre CSV doluysa → D
     if data_written and pre_written_csv:
         return "D", 14, [1,2,3,4,5,6,7]
+    # İhtiyaç analizi
     data_needed = decide_data_needed(summary, steps_text)
     pre_needed  = decide_precond_needed(summary, steps_text)
     if data_needed and pre_needed: return "D", 14, [1,2,3,4,5,6,7]
@@ -265,6 +276,7 @@ def has_expected_present(steps_text: str) -> bool:
     blocks = extract_expected_blocks(steps_text)
     return any(is_meaningful_expected(b) for b in blocks)
 
+# ---- Stepler kuralı ----
 PASSIVE_PATTERNS = re.compile(
     r'\b(yapıldı|edildi|gerçekleştirildi|sağlandı|tamamlandı|kontrol edildi|yapılır|edilir|gerçekleştirilir|sağlanır|tamamlanır|kontrol edilir)\b',
     re.I
@@ -285,6 +297,7 @@ def score_one(row, df_cols):
     summary = _text(row.get('Summary') or row.get('Issue Summary') or row.get('Title'))
     priority = _text(row.get('Priority')).lower()
 
+    # Steps sütunu
     steps_col_name = pick_first_existing(
         ['Custom field (Manual Test Steps)', 'Manual Test Steps', 'Steps', 'Custom Steps'],
         df_cols
@@ -293,7 +306,7 @@ def score_one(row, df_cols):
 
     # GERÇEK varlıklar (puanlama & override için)
     data_present_for_scoring = has_data_present_for_scoring(steps_text)
-    precond_provided_csv     = precondition_provided_from_csv(row, df_cols)
+    precond_provided_csv     = precondition_provided_from_csv(row, df_cols)   # <-- sadece CSV doluluğu
     expected_present         = has_expected_present(steps_text)
 
     # İçerik analizi + override → TABLO
