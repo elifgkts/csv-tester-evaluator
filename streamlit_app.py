@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v2.5
+# 📌 Test Case Evaluator v2.6
 # - Dark mode CSS
 # - Data/Precondition: gerçek içerik kontrolü (HTML/JSON/blok başlıkları)
 # - Expected Result: TÜM adımlar taranır; herhangi birinde varsa puan
-# - Stepler: “tek step içine çok adım yazma” tespiti (blok sayısı + birleşik içerik analizi)
+# - Stepler (GÜNCEL KURAL): Tek Action bloğu + çok adım VEYA edilgen ifade → 1 puan
 # - KPI, tablo, CSV ve Detay Kartları + debug
 
 import streamlit as st
@@ -142,7 +142,7 @@ def extract_data_blocks(steps_text: str) -> list[str]:
         val = val.replace('\\"', '"').strip()
         if val:
             blocks.append(val)
-    # HTML temizleyip Data başlığı → bir sonraki başlığa kadar
+    # HTML/metin: Data başlığından bir sonraki başlığa
     txt = _cleanup_html(steps_text)
     pattern = re.compile(
         r'(?:^|\n)\s*Data\s*:?\s*(.*?)\s*(?=(?:^|\n)\s*(?:Expected\s*Result|Action|Attachments?)\b|$)',
@@ -160,7 +160,7 @@ def is_meaningful_data(value: str) -> bool:
     v = value.strip()
     if re.search(r'https?://', v, re.I): return True
     if re.search(r'\b(select|insert|update|delete)\b', v, re.I): return True
-    if re.search(r'\b[a-z_]+\.[a-z_]+\b', v, re.I): return True  # tablo.adı sinyali
+    if re.search(r'\b[a-z_]+\.[a-z_]+\b', v, re.I): return True  # tablo.adı
     if len(re.sub(r'\s+', '', v)) >= 2: return True
     return False
 
@@ -186,10 +186,10 @@ def scan_data_signals(text: str):
     if _match(r'\b(select|insert|update|delete)\b', t): signals.append("SQL")
     if _match(r'\b(json|payload|body|request|response|headers|content-type)\b', t) and _match(r'"\w+"\s*:\s*".+?"', t):
         signals.append("JSON body")
-    if _match(r'\b(msisdn|token|iban|imei|email|username|password|user[_\-]?id|subscriber)\b', t): signals.append("ID field")
+    if _match(r'\b(msisdn|token|iban|imei|email|username|password|user[_\\-]?id|subscriber)\b', t): signals.append("ID field")
     if _match(r'\b(post|put|patch)\b', t) and _match(r'\b(body|payload)\b', t): signals.append("POST payload")
-    if _match(r'<\s*(msisdn|token|iban|imei|email|username|password|user[_\-]?id)\s*>', t) or \
-       _match(r'\{\s*(msisdn|token|iban|imei|email|username|password|user[_\-]?id)\s*\}', t):
+    if _match(r'<\\s*(msisdn|token|iban|imei|email|username|password|user[_\\-]?id)\\s*>', t) or \
+       _match(r'\\{\\s*(msisdn|token|iban|imei|email|username|password|user[_\\-]?id)\\s*\\}', t):
         signals.append("Placeholder(ID)")
     return list(set(signals))
 
@@ -223,7 +223,7 @@ def choose_table(summary: str, steps_text: str):
     if pre_needed: return "B", 17, [1,2,4,5,6,7]
     return "A", 20, [1,2,5,6,7]
 
-# ---- ACTION/STEPLER: tüm Action bloklarını çıkar ----
+# ---- ACTION/STEPLER ----
 def extract_action_blocks(steps_text: str) -> list[str]:
     blocks = []
     # JSON "Action":"..."
@@ -246,25 +246,17 @@ def extract_action_blocks(steps_text: str) -> list[str]:
     return [b for b in blocks if b.strip()]
 
 def block_has_many_substeps(text: str) -> bool:
-    """Tek Action bloğu içinde çok adım yazılmış mı? (numara/bullet/; veya ≥3 bağlaç/virgül)"""
+    """Tek Action bloğu içinde çok adım yazılmış mı?"""
     t = _cleanup_html(text or "")
-    # açık göstergeler: numaralandırma/bullet
-    if re.search(r'(^|\n)\s*(\d+[\).\-\:]|\-|\*|\•)\s+\S+', t):
-        return True
-    # satır satır çok eylem
+    if re.search(r'(^|\n)\s*(\d+[\).\-\:]|\-|\*|\•)\s+\S+', t): return True  # numbered/bulleted
     lines = [ln.strip() for ln in re.split(r'(?:\r?\n)+', t) if ln.strip()]
-    if len(lines) >= 3:
-        return True
-    # aynı satırda ; ile zincirlenmiş ≥2 parça
-    if t.count(';') >= 2:
-        return True
-    # bağlaç/virgül yoğunluğu (≥3 parça)
+    if len(lines) >= 3: return True
+    if t.count(';') >= 2: return True
     joiners = re.findall(r'(?:,|\bve\b|\bsonra\b|\bardından\b)', t, re.I)
-    if len(joiners) >= 3:
-        return True
+    if len(joiners) >= 3: return True
     return False
 
-# ---- EXPECTED: tüm adımlardan topla ----
+# ---- EXPECTED ----
 def extract_expected_blocks(steps_text: str) -> list[str]:
     blocks = []
     for m in re.finditer(r'"Expected\s*Result"\s*:\s*"(?:\\.|[^"])*"', steps_text or "", re.IGNORECASE | re.DOTALL):
@@ -295,11 +287,19 @@ def has_expected_present(steps_text: str) -> bool:
     return any(is_meaningful_expected(b) for b in blocks)
 
 # ---------- Skorlama ----------
+PASSIVE_PATTERNS = re.compile(r'\b(yapıldı|edildi|gerçekleştirildi|sağlandı|tamamlandı|kontrol edildi)\b', re.I)
+
 def score_one(row):
-    key = _text(row.get('Issue key') or row.get('Issue Key'))
-    summary = _text(row.get('Summary'))
+    key = _text(row.get('Issue key') or row.get('Issue Key') or row.get('Key') or row.get('IssueKey'))
+    summary = _text(row.get('Summary') or row.get('Issue Summary') or row.get('Title'))
     priority = _text(row.get('Priority')).lower()
-    steps_text = _text(row.get('Custom field (Manual Test Steps)'))
+    # steps sütun adını bul
+    steps_col_name = None
+    for cand in ['Custom field (Manual Test Steps)', 'Manual Test Steps', 'Steps', 'Custom Steps']:
+        if cand in row.index:
+            steps_col_name = cand
+            break
+    steps_text = _text(row.get(steps_col_name)) if steps_col_name else ""
 
     action_blocks = extract_action_blocks(steps_text)
     all_actions_text = " \n ".join(action_blocks)
@@ -334,34 +334,32 @@ def score_one(row):
 
     # 4) Ön Koşul
     if 4 in active:
-        if has_precond_tag_with_value(steps_text):
-            pts['Ön Koşul'] = base; notes.append("✅ Ön koşul belirtilmiş"); total += base
+        if has_precond_tag_with_value(steps_text) or decide_precond_needed(summary, steps_text):
+            pts['Ön Koşul'] = base; notes.append("✅ Ön koşul belirtilmiş/ima edilmiş"); total += base
         else:
             pts['Ön Koşul'] = 0; notes.append("❌ Ön koşul eksik")
 
-    # 5) Stepler – çok adımı tek stepte birleştirme var mı?
+    # 5) Stepler — GÜNCEL KURAL
     if 5 in active:
         n_blocks = len(action_blocks)
         if n_blocks == 0:
             pts['Stepler'] = 0; notes.append("❌ Stepler boş")
         elif n_blocks >= 2:
-            pts['Stepler'] = base; notes.append(f"✅ Stepler ayrı ve düzgün ({n_blocks} adım)")
-            total += base
+            pts['Stepler'] = base; notes.append(f"✅ Stepler ayrı ve düzgün ({n_blocks} adım)"); total += base
         else:
             # n_blocks == 1
-            if block_has_many_substeps(action_blocks[0]):
-                kırp = 5 if base >= 17 else 3
-                pts['Stepler'] = max(base - kırp, 1)
-                notes.append(f"🔸 Birden çok adım tek step içinde ({pts['Stepler']})")
-                total += pts['Stepler']
+            t = (action_blocks[0] or "")
+            if block_has_many_substeps(t) or PASSIVE_PATTERNS.search(t):
+                pts['Stepler'] = 1
+                notes.append("❌ Tek blokta çok adım veya edilgen ifade (1 puan)")
+                total += 1
             else:
-                pts['Stepler'] = base; notes.append("✅ Tek step ama net/tek eylem")
-                total += base
+                pts['Stepler'] = base; notes.append("✅ Tek step ama net/tek eylem"); total += base
 
     # 6) Client
     if 6 in active:
         ck = ["android","ios","web","mac","windows","chrome","safari"]
-        if any(c in summary.lower() for c in ck) or any(c in all_actions_text.lower() for c in ck):
+        if any(c in (summary or "").lower() for c in ck) or any(c in (all_actions_text or "").lower() for c in ck):
             pts['Client'] = base; notes.append("✅ Client bilgisi var"); total += base
         else:
             pts['Client'] = 0; notes.append("❌ Client bilgisi eksik")
