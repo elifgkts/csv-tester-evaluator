@@ -24,7 +24,7 @@ with st.expander("📌 Kurallar (özet)"):
   - **C:** Data gerekli
   - **D:** Hem data hem önkoşul gerekli
 - **Puanlar:** A=5×20, B=6×17, C=6×17, D=7×14
-- **Step kırıntı kuralı:** Birleşik ama mantıklı gruplanmış adım → kırpılmış puan (10–15 gibi)
+
 """)
 
 col1, col2 = st.columns([1,1])
