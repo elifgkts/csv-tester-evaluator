@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v2.9.5
-# - Tablo (A/B/C/D) İHTİYAÇ analiziyle belirlenir (summary + steps içeriği)
+# 📌 Test Case Evaluator v2.9.6
+# - Tablo (A/B/C/D) İHTİYAÇ analiziyle belirlenir:
 #   A: Data/Pre gerekmiyor
-#   B: Pre gerekli (CSV dolu olmasa da)
+#   B: Pre gerekli (CSV boş olsa da)
 #   C: Data gerekli (steps’te yazılmasa da)
-#   D: Data + Pre gerekli (CSV/steps yazılmamış olsa da)
-# - EK KURAL: Eğer case’te hem Data (steps’te anlamlı) hem Pre (CSV iki sütundan biri dolu) YAZILMIŞSA → doğrudan D (override).
+#   D: Data + Pre gerekli (yazılmış olmasa da)
+# - OVERRIDE: Hem Data (steps’te gerçek) hem Pre (CSV iki sütundan biri dolu) YAZILMIŞSA → D
 # - PUANLAMA:
-#   • Pre-Condition puanı: SADECE CSV’deki 2 sütundan biri gerçekten doluysa
+#   • Pre puanı: SADECE aşağıdaki iki CSV sütunu doluysa verilir:
+#       - Custom field (Tests association with a Pre-Condition)
+#       - Custom field (Pre-Conditions association with a Test)
 #   • Data/Expected puanı: steps’te gerçek/anlamlı varlığa göre
-# - Tek Action bloğunda çok adım/edilgen ifade → Stepler = 1 puan
-# - UI/KPI/Dağılım/Detay kartları/CSV indirme
-# - Dosya yükleme: st.file_uploader
+# - Debug modu: tetiklenen sinyaller ve kararlar gösterilir.
 
 import streamlit as st
 import pandas as pd
@@ -40,7 +40,7 @@ CUSTOM_CSS = """
   }
 }
 #MainMenu, footer {visibility:hidden;}
-.app-hero{background:linear-gradient(135deg,#1f6feb 0%, #0ea5e9 100%);color:#fff;padding:18px 22px;border-radius:14px;margin-bottom:18px;box-shadow:0 8px 24px rgba(2,6,23,0.18)}
+.app-hero{background:linear-gradient(135deg,#1f6feb 0%, #0ea5e9 100%);color:#fff;padding:18px 22px;border-radius:14px;margin-bottom:18px;box-shadow:0 8px 24px rgba(2, 6, 23, 0.18)}
 .app-hero h1{font-size:24px;margin:0 0 6px 0;line-height:1.2;color:#fff}
 .app-hero p{margin:0;opacity:.95;color:#fff}
 .kpi{border-radius:14px;padding:14px;background:var(--bg-card);border:1px solid var(--border);box-shadow:0 4px 16px rgba(2,6,23,0.06)}
@@ -75,19 +75,18 @@ with st.expander("📌 Kurallar (özet)"):
     st.markdown("""
 - **CSV ayraç:** `;`  
 - **Gerekli sütunlar:** `Issue key`/`Issue Key`, `Summary`, `Priority`, `Labels`, `Custom field (Manual Test Steps)`  
-- **Tablo mantığı (senaryoya göre, içerik analizi):**  
-  **A**: Data/Pre gerekmiyor • **B**: Pre gerekli • **C**: Data gerekli • **D**: Data+Pre gerekli  
+- **Tablo mantığı (ihtiyaca göre):** **A** Data/Pre gerekmez • **B** Pre gerekli • **C** Data gerekli • **D** Data+Pre gerekli  
 - **Puanlar:** A=5×20, B=6×17, C=6×17, D=7×14  
-- **Pre-Condition puanı:** **Sadece** şu CSV alanlardan biri **boşluk-harici doluysa** verilir:  
-  `Custom field (Tests association with a Pre-Condition)` **veya** `Custom field (Pre-Conditions association with a Test)`.  
-- **D override:** Case’te hem Data (steps’te anlamlı) hem Pre (CSV) yazılıysa → doğrudan D.
+- **Pre puanı:** **Sadece** şu iki CSV alanından biri **boşluk-harici doluysa** verilir:  
+  `Custom field (Tests association with a Pre-Condition)` veya `Custom field (Pre-Conditions association with a Test)`  
+- **D override:** Hem Data (steps) hem Pre (CSV) yazılıysa → **D**.
 """)
 
 # ---------- Sidebar ----------
 st.sidebar.header("⚙️ Ayarlar")
 sample_size = st.sidebar.slider("Kaç test case değerlendirilsin?", 1, 100, 5)
 fix_seed = st.sidebar.toggle("🔒 Fix seed (deterministik örnekleme)", value=False)
-show_debug = st.sidebar.toggle("🛠 Debug (Data/Action/Expected)", value=False)
+show_debug = st.sidebar.toggle("🛠 Debug (sinyaller & kararlar)", value=False)
 if "reroll" not in st.session_state:
     st.session_state.reroll = 0
 if st.sidebar.button("🎲 Yeniden örnekle"):
@@ -100,7 +99,6 @@ def _text(x):
     return str(x or "")
 
 def _cell(x) -> str:
-    """NaN/None güvenli hücre okuma: NaN -> ''."""
     try:
         if pd.isna(x):
             return ""
@@ -185,15 +183,27 @@ def precondition_provided_from_csv(row, df_cols) -> bool:
                 return True
     return False
 
+def get_pre_assoc_text(row, df_cols) -> str:
+    """İhtiyaç analizinde 'pre alanlarını okumak' için CSV’deki association metnini de kat."""
+    texts = []
+    for col in PRECOND_EXACT_COLS:
+        if col in df_cols:
+            texts.append(_text(row.get(col)))
+    return "\n".join(texts)
+
 # ---- İçerik sinyalleri (ihtiyaç analizi) ----
 def scan_precond_signals(text: str):
     t = (text or "").lower()
     s = []
-    if _match(r'\bprecondition\b|ön\s*koşul|given .*already', t): s.append("Precondition ifadesi")
-    if _match(r'\b(logged in|login|giriş yap(mış|ın)|authenticated|auth)\b', t): s.append("Login/Auth")
+    # doğrudan ifade ve zorunluluk kalıpları
+    if _match(r'\b(pre[- ]?condition|ön\s*koşul|ön\s*şart)\b', t): s.append("Precondition ifadesi")
+    if _match(r'\b(gerek(ir|li)|zorunlu|olmalı|required|must|should)\b.*\b(login|auth|role|permission|config|seed|setup)\b', t): s.append("Zorunluluk ifadesi")
+    # login/auth
+    if _match(r'\b(logged in|login|giriş yap(mış|ın)|authenticated|auth|session)\b', t): s.append("Login/Auth")
+    # abonelik / mevcut hesap / ortam
     if _match(r'\b(subscription|abonelik)\b.*\b(aktif|var|existing)\b', t): s.append("Abonelik aktif")
-    if _match(r'\bexisting user|mevcut kullanıcı\b', t): s.append("Mevcut kullanıcı/hesap")
-    if _match(r'\b(seed|setup|config(ure|)|feature flag|whitelist|allowlist|role|permission)\b', t): s.append("Ortam/Ayar/Yetki")
+    if _match(r'\bexisting user|mevcut kullanıcı|mevcut hesap\b', t): s.append("Mevcut kullanıcı/hesap")
+    if _match(r'\b(seed|setup|config(ure)?|feature flag|whitelist|allowlist|role|permission|yetki)\b', t): s.append("Ortam/Ayar/Yetki")
     return list(set(s))
 
 def scan_data_signals(text: str):
@@ -208,34 +218,39 @@ def scan_data_signals(text: str):
     return list(set(s))
 
 # ---- İhtiyaç analizi ----
-def decide_data_needed(summary: str, steps_text: str) -> bool:
+def decide_data_needed(summary: str, steps_text: str) -> (bool, list):
     combined = (summary or "") + "\n" + (steps_text or "")
-    if len(scan_data_signals(combined)) >= 2: return True
-    if extract_data_blocks(steps_text): return True
-    return False
+    ds = scan_data_signals(combined)
+    needed = len(ds) >= 2 or bool(extract_data_blocks(steps_text))
+    return needed, ds
 
-def decide_precond_needed(summary: str, steps_text: str) -> bool:
-    combined = (summary or "") + "\n" + (steps_text or "")
-    return len(scan_precond_signals(combined)) >= 1
+def decide_precond_needed(summary: str, steps_text: str, pre_assoc_text: str) -> (bool, list):
+    combined = (summary or "") + "\n" + (steps_text or "") + "\n" + (pre_assoc_text or "")
+    ps = scan_precond_signals(combined)
+    needed = len(ps) >= 1
+    return needed, ps
 
 # ---- TABLO KARARI (ihtiyaç + override) ----
-def choose_table(summary: str, steps_text: str, *, data_written: bool, pre_written_csv: bool):
-    # 1) İHTİYAÇ: içeriğe bakarak karar (CSV doluluğundan BAĞIMSIZ)
-    data_needed = decide_data_needed(summary, steps_text)
-    pre_needed  = decide_precond_needed(summary, steps_text)
+def choose_table(summary: str, steps_text: str, pre_assoc_text: str, *, data_written: bool, pre_written_csv: bool, debug: bool=False):
+    data_needed, data_sigs = decide_data_needed(summary, steps_text)
+    pre_needed,  pre_sigs  = decide_precond_needed(summary, steps_text, pre_assoc_text)
 
-    # 2) OVERRIDE: hem data YAZILMIŞ (steps) hem pre YAZILMIŞ (CSV) ise → D
+    # OVERRIDE: hem data YAZILMIŞ (steps) hem pre YAZILMIŞ (CSV) ise → D
     if data_written and pre_written_csv:
-        return "D", 14, [1,2,3,4,5,6,7]
+        decision = ("D", 14, [1,2,3,4,5,6,7])
+    else:
+        if data_needed and pre_needed:
+            decision = ("D", 14, [1,2,3,4,5,6,7])
+        elif data_needed:
+            decision = ("C", 17, [1,2,3,5,6,7])
+        elif pre_needed:
+            decision = ("B", 17, [1,2,4,5,6,7])
+        else:
+            decision = ("A", 20, [1,2,5,6,7])
 
-    # 3) İhtiyaca göre tablo seçimi
-    if data_needed and pre_needed: 
-        return "D", 14, [1,2,3,4,5,6,7]
-    if data_needed:                
-        return "C", 17, [1,2,3,5,6,7]
-    if pre_needed:                 
-        return "B", 17, [1,2,4,5,6,7]
-    return "A", 20, [1,2,5,6,7]
+    if debug:
+        return (*decision, data_sigs, pre_sigs, data_needed, pre_needed)
+    return decision
 
 # ---- ACTION/STEPLER ----
 def extract_action_blocks(steps_text: str) -> list[str]:
@@ -300,7 +315,7 @@ def block_has_many_substeps(text: str) -> bool:
     return False
 
 # ---------- Skorlama ----------
-def score_one(row, df_cols):
+def score_one(row, df_cols, debug=False):
     key = _text(row.get('Issue key') or row.get('Issue Key') or row.get('Key') or row.get('IssueKey'))
     summary = _text(row.get('Summary') or row.get('Issue Summary') or row.get('Title'))
     priority = _text(row.get('Priority')).lower()
@@ -316,13 +331,25 @@ def score_one(row, df_cols):
     data_present_for_scoring = has_data_present_for_scoring(steps_text)
     precond_provided_csv     = precondition_provided_from_csv(row, df_cols)   # <-- sadece CSV doluluğu
     expected_present         = has_expected_present(steps_text)
+    pre_assoc_text           = get_pre_assoc_text(row, df_cols)
 
     # İçerik analizi + override → TABLO
-    table, base, active = choose_table(
-        summary, steps_text,
-        data_written=data_present_for_scoring,
-        pre_written_csv=precond_provided_csv
-    )
+    if debug:
+        table, base, active, data_sigs, pre_sigs, data_needed, pre_needed = choose_table(
+            summary, steps_text, pre_assoc_text,
+            data_written=data_present_for_scoring,
+            pre_written_csv=precond_provided_csv,
+            debug=True
+        )
+    else:
+        table, base, active = choose_table(
+            summary, steps_text, pre_assoc_text,
+            data_written=data_present_for_scoring,
+            pre_written_csv=precond_provided_csv,
+            debug=False
+        )
+        data_sigs = pre_sigs = []
+        data_needed = pre_needed = None
 
     # Actions
     action_blocks = extract_action_blocks(steps_text)
@@ -389,10 +416,20 @@ def score_one(row, df_cols):
         else:
             pts['Expected'] = 0; notes.append("❌ Expected result eksik")
 
-    return {
+    result = {
         "Key": key, "Summary": summary, "Tablo": table, "Toplam Puan": total,
         **pts, "Açıklama": " | ".join(notes)
     }
+    if debug:
+        result.update({
+            "_data_sigs": ", ".join(sorted(data_sigs)) or "-",
+            "_pre_sigs":  ", ".join(sorted(pre_sigs)) or "-",
+            "_data_needed": data_needed,
+            "_pre_needed":  pre_needed,
+            "_data_written": data_present_for_scoring,
+            "_pre_written_csv": precond_provided_csv,
+        })
+    return result
 
 # ---------- Çalıştır ----------
 if uploaded:
@@ -404,8 +441,9 @@ if uploaded:
     n = min(sample_size, len(df))
     sample = df.sample(n=n, random_state=(123 + st.session_state.reroll) if fix_seed else None) if len(df)>0 else df
 
-    results = sample.apply(lambda r: score_one(r, df.columns), axis=1, result_type='expand')
+    results = sample.apply(lambda r: score_one(r, df.columns, debug=show_debug), axis=1, result_type='expand')
 
+    # KPI
     total_cases = len(results)
     avg_score  = round(results["Toplam Puan"].mean() if total_cases else 0, 1)
     min_score  = int(results["Toplam Puan"].min()) if total_cases else 0
@@ -421,15 +459,19 @@ if uploaded:
     st.markdown("### 📈 Tablo Dağılımı")
     st.bar_chart(dist)
 
+    # Skor % ve tablo
     MAX_BY_TABLE = {"A": 100, "B": 102, "C": 102, "D": 98}
     results["Maks Puan"] = results["Tablo"].map(MAX_BY_TABLE).fillna(100)
     results["Skor %"] = (results["Toplam Puan"] / results["Maks Puan"]).clip(0,1) * 100
     results["Skor %"] = results["Skor %"].round(1)
 
-    show_df = results[["Key","Summary","Tablo","Toplam Puan","Skor %","Açıklama"]].copy()
+    show_cols = ["Key","Summary","Tablo","Toplam Puan","Skor %","Açıklama"]
+    if show_debug:
+        show_cols += ["_data_needed","_pre_needed","_data_written","_pre_written_csv","_data_sigs","_pre_sigs"]
+
     st.markdown("## 📊 Değerlendirme Tablosu")
     st.dataframe(
-        show_df,
+        results[show_cols].copy(),
         use_container_width=True,
         hide_index=True,
         column_config={
@@ -439,12 +481,18 @@ if uploaded:
             "Toplam Puan": st.column_config.NumberColumn("Toplam Puan", format="%d"),
             "Skor %": st.column_config.ProgressColumn("Skor %", min_value=0, max_value=100, help="Toplam puanın tablo maksimumuna oranı"),
             "Açıklama": st.column_config.TextColumn("Açıklama", width="large"),
+            "_data_needed": st.column_config.TextColumn("need:data"),
+            "_pre_needed": st.column_config.TextColumn("need:pre"),
+            "_data_written": st.column_config.TextColumn("has:data(steps)"),
+            "_pre_written_csv": st.column_config.TextColumn("has:pre(CSV)"),
+            "_data_sigs": st.column_config.TextColumn("Data sinyalleri"),
+            "_pre_sigs": st.column_config.TextColumn("Pre sinyalleri"),
         }
     )
 
     st.download_button(
         "📥 Sonuçları CSV olarak indir",
-        data=show_df.to_csv(index=False, sep=';', encoding='utf-8'),
+        data=results[show_cols].to_csv(index=False, sep=';', encoding='utf-8'),
         file_name=f"testcase_skorlari_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
         mime="text/csv"
     )
@@ -476,3 +524,9 @@ if uploaded:
         for k in ['Başlık','Öncelik','Data','Ön Koşul','Stepler','Client','Expected']:
             if k in r and pd.notna(r[k]):
                 st.markdown(f"- **{k}**: {int(r[k])} puan")
+
+        if show_debug:
+            with st.expander(f"🔎 Debug — {r['Key']}"):
+                st.markdown(f"- need:data: `{r.get('_data_needed')}` — sinyaller: {r.get('_data_sigs')}")
+                st.markdown(f"- need:pre : `{r.get('_pre_needed')}` — sinyaller: {r.get('_pre_sigs')}")
+                st.markdown(f"- has:data(steps): `{r.get('_data_written')}` • has:pre(CSV): `{r.get('_pre_written_csv')}`")
