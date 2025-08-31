@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator v2.9.8
+# 📌 Test Case Evaluator v2.9.8-fix
 # - Tablo (A/B/C/D) İHTİYAÇ analiziyle belirlenir (summary + steps + pre-association metni)
-#   A: Data/Pre gerekmiyor • B: Pre gerekli • C: Data gerekli • D: Data+Pre gerekli
+#   A: Data/Pre gerekmez • B: Pre gerekli • C: Data gerekli • D: Data+Pre gerekli
 # - OVERRIDE: Hem Data (steps’te anlamlı) hem Pre (CSV’de iki sütundan biri dolu) yazılmışsa → D
 # - PUANLAMA:
 #   • Pre puanı: yalnızca CSV’deki iki sütundan biri doluysa
@@ -93,7 +93,7 @@ if st.sidebar.button("🎲 Yeniden örnekle"):
 uploaded = st.file_uploader("📤 CSV yükle (`;` ayraçlı)", type="csv")
 
 # ---------- Yardımcılar ----------
-def _text(x): 
+def _text(x):
     return str(x or "")
 
 def _cell(x) -> str:
@@ -107,11 +107,11 @@ def _cell(x) -> str:
 def _is_blank_after_strip(val: str) -> bool:
     return len((val or "").strip()) == 0
 
-def _match(pattern, text): 
+def _match(pattern, text):
     return re.search(pattern, text or "", re.IGNORECASE)
 
 def _normalize_newlines(s: str) -> str:
-    return (s or "").replace("\r\n","\n").replace("\r","\n")
+    return (s or "").replace("\r\n", "\n").replace("\r", "\n")
 
 def _cleanup_html(s: str) -> str:
     s = _normalize_newlines(s or "")
@@ -123,8 +123,10 @@ def _cleanup_html(s: str) -> str:
 def _is_meaningless(val: str) -> bool:
     meaningless = {"", "-", "—", "none", "n/a", "na", "null", "yok"}
     v = re.sub(r'\s+', ' ', (val or '')).strip().lower()
-    if v in meaningless: return True
-    if re.fullmatch(r'[\s\[\]\{\}\(\)\.,;:\-_/\\]*', v or ""): return True
+    if v in meaningless:
+        return True
+    if re.fullmatch(r'[\s\[\]\{\}\(\)\.,;:\-_/\\]*', v or ""):
+        return True
     return False
 
 # ---- CSV sütun adı toleransı ----
@@ -138,9 +140,12 @@ def pick_first_existing(colnames, df_cols):
 def extract_data_blocks(steps_text: str) -> list[str]:
     blocks = []
     txt_raw = _normalize_newlines(steps_text or "")
-    for m in re.finditer(r'["\']Data["\']\s*:\s*["\']((?:\\.|[^"\'])*)["\']', txt_raw, re.I | re.DOTALL):
-        val = m.group(1).replace('\\"','"').replace("\\'", "'").strip()
-        if val: blocks.append(val)
+    # JSON "Data":"..."
+    for m in re.finditer(r'"Data"\s*:\s*"((?:\\.|[^"])*)"', txt_raw, re.I | re.DOTALL):
+        val = m.group(1).replace('\\"', '"').strip()
+        if val:
+            blocks.append(val)
+    # Metin/HTML başlığı: Data / Data 1 vs
     txt = _cleanup_html(txt_raw)
     pattern = re.compile(
         r'(?:^|\n)\s*Data(?:\s*\d+)?\s*:?\s*(.*?)\s*(?=(?:^|\n)\s*(?:Expected\s*Result|Action|Adım|Step|Attachments?)\b|$)',
@@ -148,22 +153,30 @@ def extract_data_blocks(steps_text: str) -> list[str]:
     )
     for m in pattern.finditer(txt):
         val = (m.group(1) or '').strip()
-        if val: blocks.append(val)
+        if val:
+            blocks.append(val)
     return [b for b in blocks if b.strip()]
 
 def is_meaningful_data(value: str) -> bool:
-    if _is_meaningless(value): return False
+    if _is_meaningless(value):
+        return False
     v = value.strip()
-    if re.search(r'https?://', v, re.I): return True
-    if re.search(r'\b(select|insert|update|delete)\b', v, re.I): return True
-    if re.search(r'\b[a-z_]+\.[a-z_]+\b', v, re.I): return True
-    if len(re.sub(r'\s+', '', v)) >= 2: return True
+    if re.search(r'https?://', v, re.I):
+        return True
+    if re.search(r'\b(select|insert|update|delete)\b', v, re.I):
+        return True
+    if re.search(r'\b[a-z_]+\.[a-z_]+\b', v, re.I):
+        return True
+    if len(re.sub(r'\s+', '', v)) >= 2:
+        return True
     return False
 
 def has_data_present_for_scoring(steps_text: str) -> bool:
     blocks = extract_data_blocks(steps_text)
-    if any(is_meaningful_data(b) for b in blocks): return True
-    if re.search(r'\b(select|insert|update|delete)\b', steps_text or "", re.I): return True
+    if any(is_meaningful_data(b) for b in blocks):
+        return True
+    if re.search(r'\b(select|insert|update|delete)\b', steps_text or "", re.I):
+        return True
     return False
 
 # ---- PRECONDITION (CSV doluluğu) ----
@@ -206,25 +219,20 @@ def scan_data_signals(text: str):
     if _match(r'\b(select|insert|update|delete)\b', t): s.append("SQL")
     if _match(r'\b(json|payload|body|request|response|headers|content-type)\b', t) and _match(r'"\w+"\s*:\s*".+?"', t):
         s.append("JSON body")
-    if _match(r'\b(msisdn|token|iban|imei|email|username|password|user[_\\-]?id|subscriber)\b', t):
+    if _match(r'\b(msisdn|token|iban|imei|email|username|password|user[_\-]?id|subscriber)\b', t):
         s.append("ID field")
     if _match(r'\b(post|put|patch)\b', t) and _match(r'\b(body|payload)\b', t):
         s.append("POST payload")
-    if _match(r'<\\s*(msisdn|token|iban|imei|email|username|password|user[_\\-]?id)\\s*>', t) or \
-       _match(r'\\{\\s*(msisdn|token|iban|imei|email|username|password|user[_\\-]?id)\\s*\\}', t):
+    if _match(r'<\s*(msisdn|token|iban|imei|email|username|password|user[_\-]?id)\s*>', t) or \
+       _match(r'\{\s*(msisdn|token|iban|imei|email|username|password|user[_\-]?id)\s*\}', t):
         s.append("Placeholder(ID)")
-
     # 🔎 yeni sinyaller
-    if _match(r'/(?:[a-z0-9_\\-]+)(?:/[a-z0-9_\\-]+){2,}', t): s.append("HTTP path")
-    if _match(r"\bid[’' ]?li\b", t) or _match(r"\b(episode|content|asset)[_\\- ]?id\b", t) or _match(r"\bid\b", t):
+    if _match(r'/(?:[a-z0-9_\-]+)(?:/[a-z0-9_\-]+){2,}', t): s.append("HTTP path")
+    if _match(r"\bid[’'\s]?li\b", t) or _match(r"\b(episode|content|asset)[_\- ]?id\b", t) or _match(r"\bid\b", t):
         s.append("ID token")
-    if _match(r"\b\d{6,}\b", t):
-        s.append("Long numeric ID")
-    if _match(r"\b(response|cevap|yanıt)\b", t):
-        s.append("Response mention")
-    if _match(r"\b(tablosu|tablosundaki|table|collection|index)\b", t):
-        s.append("Table mention")
-
+    if _match(r"\b\d{6,}\b", t): s.append("Long numeric ID")
+    if _match(r"\b(response|cevap|yanıt)\b", t): s.append("Response mention")
+    if _match(r"\b(tablosu|tablosundaki|table|collection|index)\b", t): s.append("Table mention")
     return list(set(s))
 
 # ---- İhtiyaç analizi ----
@@ -232,7 +240,6 @@ def decide_data_needed(summary: str, steps_text: str):
     """Return (needed: bool, data_signals: list[str], strong_combo: bool)."""
     combined = (summary or "") + "\n" + (steps_text or "")
     ds = scan_data_signals(combined)
-
     strong_combo = (
         ("ID token" in ds and "Response mention" in ds) or
         ("HTTP path" in ds and "ID token" in ds) or
@@ -252,7 +259,6 @@ def choose_table(summary: str, steps_text: str, pre_assoc_text: str, *, data_wri
     data_needed, data_sigs, data_strong = decide_data_needed(summary, steps_text)
     pre_needed,  pre_sigs              = decide_precond_needed(summary, steps_text, pre_assoc_text)
 
-    # OVERRIDE: hem data YAZILMIŞ (steps) hem pre YAZILMIŞ (CSV) ise → D
     if data_written and pre_written_csv:
         decision = ("D", 14, [1,2,3,4,5,6,7])
     else:
@@ -273,9 +279,12 @@ def choose_table(summary: str, steps_text: str, pre_assoc_text: str, *, data_wri
 def extract_action_blocks(steps_text: str) -> list[str]:
     blocks = []
     txt_raw = _normalize_newlines(steps_text or "")
-    for m in re.finditer(r'["\']Action["\']\s*:\s*["\']((?:\\.|[^"\'])*)["\']', txt_raw, re.I | re.DOTALL):
-        val = m.group(1).replace('\\"','"').replace("\\'", "'").strip()
-        if val: blocks.append(val)
+    # JSON "Action":"..."
+    for m in re.finditer(r'"Action"\s*:\s*"((?:\\.|[^"])*)"', txt_raw, re.I | re.DOTALL):
+        val = m.group(1).replace('\\"', '"').strip()
+        if val:
+            blocks.append(val)
+    # HTML/metin başlıkları
     txt = _cleanup_html(txt_raw)
     pattern = re.compile(
         r'(?:^|\n)\s*(?:Action|Adım|Step)(?:\s*\d+)?\s*:?\s*(.*?)\s*(?=(?:^|\n)\s*(?:Data|Expected\s*Result|Attachments?|Action|Adım|Step)\b|$)',
@@ -283,7 +292,9 @@ def extract_action_blocks(steps_text: str) -> list[str]:
     )
     for m in pattern.finditer(txt):
         val = (m.group(1) or '').strip()
-        if val: blocks.append(val)
+        if val:
+            blocks.append(val)
+    # "Step 1:" vb. ayırıcılarla böl
     if len(blocks) <= 1:
         split_blocks = re.split(r'(?:^|\n)\s*Step\s*\d+\s*:\s*', txt, flags=re.I)
         split_blocks = [b.strip() for b in split_blocks if b.strip()]
@@ -294,9 +305,10 @@ def extract_action_blocks(steps_text: str) -> list[str]:
 def extract_expected_blocks(steps_text: str) -> list[str]:
     blocks = []
     txt_raw = _normalize_newlines(steps_text or "")
-    for m in re.finditer(r'["\']Expected\s*Result["\']\s*:\s*["\']((?:\\.|[^"\'])*)["\']', txt_raw, re.I | re.DOTALL):
-        val = m.group(1).replace('\\"','"').replace("\\'", "'").strip()
-        if val: blocks.append(val)
+    for m in re.finditer(r'"Expected\s*Result"\s*:\s*"((?:\\.|[^"])*)"', txt_raw, re.I | re.DOTALL):
+        val = m.group(1).replace('\\"', '"').strip()
+        if val:
+            blocks.append(val)
     txt = _cleanup_html(txt_raw)
     pattern = re.compile(
         r'(?:^|\n)\s*Expected\s*Result\s*:?\s*(.*?)\s*(?=(?:^|\n)\s*(?:Action|Data|Attachments?)\b|$)',
@@ -304,11 +316,13 @@ def extract_expected_blocks(steps_text: str) -> list[str]:
     )
     for m in pattern.finditer(txt):
         val = (m.group(1) or '').strip()
-        if val: blocks.append(val)
+        if val:
+            blocks.append(val)
     return [b for b in blocks if b.strip()]
 
 def is_meaningful_expected(value: str) -> bool:
-    if _is_meaningless(value): return False
+    if _is_meaningless(value):
+        return False
     v = value.strip()
     return len(re.sub(r'\s+', '', v)) >= 2
 
@@ -334,13 +348,18 @@ def expected_style_hits(text: str) -> int:
 def expected_style_penalty(blocks: list[str]) -> tuple[int, int]:
     txt = " . ".join(blocks or [])
     hits = expected_style_hits(txt)
-    if hits <= 0: 
+    if hits <= 0:
         return 0, 0
-    if hits == 1: pen = 1
-    elif hits == 2: pen = 2
-    elif hits == 3: pen = 3
-    elif hits <= 5: pen = 4
-    else: pen = 5
+    if hits == 1:
+        pen = 1
+    elif hits == 2:
+        pen = 2
+    elif hits == 3:
+        pen = 3
+    elif hits <= 5:
+        pen = 4
+    else:
+        pen = 5
     return hits, pen
 
 # ---- Stepler kuralı ----
@@ -348,14 +367,19 @@ PASSIVE_PATTERNS = re.compile(
     r'\b(yapıldı|edildi|gerçekleştirildi|sağlandı|tamamlandı|kontrol edildi|yapılır|edilir|gerçekleştirilir|sağlanır|tamamlanır|kontrol edilir)\b',
     re.I
 )
+
 def block_has_many_substeps(text: str) -> bool:
     t = _cleanup_html(text or "")
-    if re.search(r'(^|\n)\s*(\d+[\).\-\:]|\-|\*|\•)\s+\S+', t): return True
+    if re.search(r'(^|\n)\s*(\d+[\).\-\:]|\-|\*|\•)\s+\S+', t):
+        return True
     lines = [ln.strip() for ln in re.split(r'(?:\n)+', t) if ln.strip()]
-    if len(lines) >= 3: return True
-    if t.count(';') >= 2: return True
+    if len(lines) >= 3:
+        return True
+    if t.count(';') >= 2:
+        return True
     joiners = re.findall(r'(?:,|\bve\b|\bsonra\b|\bardından\b)', t, re.I)
-    if len(joiners) >= 3: return True
+    if len(joiners) >= 3:
+        return True
     return False
 
 # ---------- Skorlama ----------
@@ -496,7 +520,7 @@ if uploaded:
         df = pd.read_csv(uploaded)
 
     n = min(sample_size, len(df))
-    sample = df.sample(n=n, random_state=(123 + st.session_state.reroll) if fix_seed else None) if len(df)>0 else df
+    sample = df.sample(n=n, random_state=(123 + st.session_state.reroll) if fix_seed else None) if len(df) > 0 else df
 
     results = sample.apply(lambda r: score_one(r, df.columns, debug=show_debug), axis=1, result_type='expand')
 
@@ -507,11 +531,15 @@ if uploaded:
     max_score  = int(results["Toplam Puan"].max()) if total_cases else 0
     dist = results['Tablo'].value_counts().reindex(["A","B","C","D"]).fillna(0).astype(int)
 
-    c1,c2,c3,c4 = st.columns(4)
-    with c1: st.markdown(f'<div class="kpi"><div class="kpi-title">Toplam Örnek</div><div class="kpi-value">{total_cases}</div><div class="kpi-sub">Değerlendirilen</div></div>', unsafe_allow_html=True)
-    with c2: st.markdown(f'<div class="kpi"><div class="kpi-title">Dağılım (A/B/C/D)</div><div class="kpi-value">{dist["A"]}/{dist["B"]}/{dist["C"]}/{dist["D"]}</div><div class="kpi-sub">Tablo adetleri</div></div>', unsafe_allow_html=True)
-    with c3: st.markdown(f'<div class="kpi"><div class="kpi-title">Ortalama Skor</div><div class="kpi-value">{avg_score}</div><div class="kpi-sub">Min: {min_score} • Max: {max_score}</div></div>', unsafe_allow_html=True)
-    with c4: st.markdown(f'<div class="kpi"><div class="kpi-title">Rapor Zamanı</div><div class="kpi-value">{datetime.now().strftime("%H:%M")}</div><div class="kpi-sub">Yerel saat</div></div>', unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(f'<div class="kpi"><div class="kpi-title">Toplam Örnek</div><div class="kpi-value">{total_cases}</div><div class="kpi-sub">Değerlendirilen</div></div>', unsafe_allow_html=True)
+    with c2:
+        st.markdown(f'<div class="kpi"><div class="kpi-title">Dağılım (A/B/C/D)</div><div class="kpi-value">{dist["A"]}/{dist["B"]}/{dist["C"]}/{dist["D"]}</div><div class="kpi-sub">Tablo adetleri</div></div>', unsafe_allow_html=True)
+    with c3:
+        st.markdown(f'<div class="kpi"><div class="kpi-title">Ortalama Skor</div><div class="kpi-value">{avg_score}</div><div class="kpi-sub">Min: {min_score} • Max: {max_score}</div></div>', unsafe_allow_html=True)
+    with c4:
+        st.markdown(f'<div class="kpi"><div class="kpi-title">Rapor Zamanı</div><div class="kpi-value">{datetime.now().strftime("%H:%M")}</div><div class="kpi-sub">Yerel saat</div></div>', unsafe_allow_html=True)
 
     st.markdown("### 📈 Tablo Dağılımı")
     st.bar_chart(dist)
@@ -519,12 +547,12 @@ if uploaded:
     # Skor % ve tablo
     MAX_BY_TABLE = {"A": 100, "B": 102, "C": 102, "D": 98}
     results["Maks Puan"] = results["Tablo"].map(MAX_BY_TABLE).fillna(100)
-    results["Skor %"] = (results["Toplam Puan"] / results["Maks Puan"]).clip(0,1) * 100
+    results["Skor %"] = (results["Toplam Puan"] / results["Maks Puan"]).clip(0, 1) * 100
     results["Skor %"] = results["Skor %"].round(1)
 
-    show_cols = ["Key","Summary","Tablo","Toplam Puan","Skor %","Açıklama"]
+    show_cols = ["Key", "Summary", "Tablo", "Toplam Puan", "Skor %", "Açıklama"]
     if show_debug:
-        show_cols += ["_data_needed","_pre_needed","_data_strong","_data_written","_pre_written_csv","_data_sigs","_pre_sigs","_exp_hits","_exp_penalty"]
+        show_cols += ["_data_needed", "_pre_needed", "_data_strong", "_data_written", "_pre_written_csv", "_data_sigs", "_pre_sigs", "_exp_hits", "_exp_penalty"]
 
     st.markdown("## 📊 Değerlendirme Tablosu")
     st.dataframe(
@@ -558,11 +586,11 @@ if uploaded:
     )
 
     st.markdown("## 📝 Detaylar")
-    badge_map = {"A":"badge badge-a","B":"badge badge-b","C":"badge badge-c","D":"badge badge-d"}
+    badge_map = {"A": "badge badge-a", "B": "badge badge-b", "C": "badge badge-c", "D": "badge badge-d"}
 
     for _, r in results.iterrows():
         max_pt = MAX_BY_TABLE.get(r["Tablo"], 100)
-        pct = float(r["Toplam Puan"]) / max_pt if max_pt else 0
+        pct = float(r["Toplam Puan"]) / max_pt if max_pt else 0.0
         badge_class = badge_map.get(r["Tablo"], "badge")
 
         st.markdown('<div class="case-card">', unsafe_allow_html=True)
@@ -573,15 +601,15 @@ if uploaded:
             </div>
         ''', unsafe_allow_html=True)
 
-        cL, cR = st.columns([3,1])
+        cL, cR = st.columns([3, 1])
         with cL:
             st.markdown(f"**Toplam Puan:** `{int(r['Toplam Puan'])}` / `{int(max_pt)}`")
-            st.progress(min(max(pct,0),1.0))
+            st.progress(min(max(pct, 0.0), 1.0))
         with cR:
-            st.markdown(f"**Skor %:** **{round(pct*100,1)}%**")
+            st.markdown(f"**Skor %:** **{round(pct*100, 1)}%**")
 
         st.markdown("<hr class='hr-soft'/>", unsafe_allow_html=True)
-        for k in ['Başlık','Öncelik','Data','Ön Koşul','Stepler','Client','Expected']:
+        for k in ['Başlık', 'Öncelik', 'Data', 'Ön Koşul', 'Stepler', 'Client', 'Expected']:
             if k in r and pd.notna(r[k]):
                 st.markdown(f"- **{k}**: {int(r[k])} puan")
 
