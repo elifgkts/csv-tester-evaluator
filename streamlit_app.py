@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-# 📌 Test Case Evaluator — Final (Frontend + Backend uyumlu)
+
+# 📌 Test Case Evaluator — v1.0.0
 # - Tablo (A/B/C/D) İHTİYAÇ analiziyle belirlenir (summary + steps + pre-association metni)
 #   A: Data/Pre gerekmez • B: Pre gerekli • C: Data gerekli • D: Data+Pre gerekli
 # - OVERRIDE: Hem Data (steps’te "Data":"...") hem Pre (CSV’de iki sütundan biri dolu) yazılmışsa → D
@@ -100,26 +101,26 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 st.markdown(f"""
 <div class="app-hero">
   <h1>📋 Test Case Kalite Değerlendirmesi</h1>
-  <p>Tablo belirleme: içerik analizi • Puanlama: gerçek alan varlığına göre.
+  <p>
   <span style="opacity:0.8">Rapor zamanı: {datetime.now().strftime('%d.%m.%Y %H:%M')}</span></p>
 </div>
 """, unsafe_allow_html=True)
 
-with st.expander("📌 Kurallar (özet)", expanded=False):
+with st.expander("📌 Kurallar", expanded=False):
     st.markdown("""
 - **CSV ayraç:** `;`  
 - **Gerekli sütunlar:** `Issue key/Issue Key`, `Summary`, `Priority`, `Labels`, `Custom field (Manual Test Steps)`  
 - **Precondition sütunları (CSV):**  
   - `Custom field (Tests association with a Pre-Condition)`  
   - `Custom field (Pre-Conditions association with a Test)`  
-- **Tablo mantığı (ihtiyaca göre):** **A** Data/Pre gerekmez • **B** Pre gerekli • **C** Data gerekli • **D** Data+Pre gerekli  
+- **Tablo mantığı (ihtiyaca göre):** **A** Data/Pre olmasa da olabilir • **B** Pre gerekli • **C** Data gerekli • **D** Data+Pre gerekli  
 - **D override:** Hem Data (steps JSON’unda **“Data”** alanı) hem Pre (CSV) mevcutsa → **D**  
 - **✏️ Expected yazım puan kırma:** Expected Result geçmiş/olup-bitti anlatımı içerirse 1–5 puan kesilir.
 """)
 
 # ---------- Sidebar ----------
 st.sidebar.header("⚙️ Ayarlar")
-sample_size = st.sidebar.slider("Kaç test case değerlendirilsin?", 1, 300, 32, help="Örnekleme sayısı")
+sample_size = st.sidebar.slider("Kaç test case değerlendirilsin?", 1, 300, 5, help="Örnekleme sayısı")
 fix_seed = st.sidebar.toggle("🔒 Fix seed (deterministik örnekleme)", value=False)
 show_debug = st.sidebar.toggle("🛠 Debug (sinyaller & kararlar)", value=False)
 if "reroll" not in st.session_state:
