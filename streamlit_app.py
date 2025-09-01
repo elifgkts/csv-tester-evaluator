@@ -63,21 +63,21 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 st.markdown(f"""
 <div class="app-hero">
   <h1>📋 Test Case Kalite Değerlendirmesi</h1>
-  <p>Tablo belirleme: içerik analizi • Puanlama: gerçek alan varlığına göre.
+  <p>
   <span style="opacity:0.8">Rapor zamanı: {datetime.now().strftime('%d.%m.%Y %H:%M')}</span></p>
 </div>
 """, unsafe_allow_html=True)
 
-with st.expander("📌 Kurallar (özet)"):
+with st.expander("📌 Kurallar"):
     st.markdown("""
 - **CSV ayraç:** `;`  
-- **Gerekli sütunlar:** `Issue key`/`Issue Key`, `Summary`, `Priority`, `Labels`, `Custom field (Manual Test Steps)`  
+- **Gerekli sütunlar:** `Issue key`/`Issue Key`, `Summary`, `Priority`, `Labels`, `Tests association with a Pre-Condition	`,`Pre-Conditions association with a Test	`,`Custom field (Manual Test Steps)`  
 - **Tablo mantığı (ihtiyaca göre):** **A** Data/Pre gerekmez • **B** Pre gerekli • **C** Data gerekli • **D** Data+Pre gerekli  
 - **Puanlar:** A=5×20, B=6×17, C=6×17, D=7×14  
 - **Pre puanı:** **Sadece** şu iki CSV alanından biri **boşluk-harici doluysa** verilir:  
   `Custom field (Tests association with a Pre-Condition)` veya `Custom field (Pre-Conditions association with a Test)`  
-- **D override:** Hem Data (steps) hem Pre (CSV) yazılıysa → **D**.  
-- **✏️ Expected yazım cezası:** Expected Result geçmiş/olup-bitti anlatımı içerirse 1–5 puan kesilir.
+- **D override:** Hem Data (steps) hem Pre (CSV) mevcutta yazılıysa → **D**.  
+- **✏️ Expected yazım puan kırma:** Expected Result geçmiş/olup-bitti anlatımı içerirse 1–5 puan kesilir.
 """)
 
 # ---------- Sidebar ----------
