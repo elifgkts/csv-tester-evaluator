@@ -1,17 +1,10 @@
 # -*- coding: utf-8 -*-
 
-# 📌 Test Case Evaluator — v1.1.0 (Key Prefix Filter eklendi)
-# - Tablo (A/B/C/D) İHTİYAÇ analiziyle belirlenir (summary + steps + pre-association metni)
-#   A: Data/Pre gerekmez • B: Pre gerekli • C: Data gerekli • D: Data+Pre gerekli
-# - OVERRIDE: Hem Data (steps’te "Data":"...") hem Pre (CSV’de iki sütundan biri dolu) yazılmışsa → D
-# - PUANLAMA:
-#   • Pre puanı: yalnızca CSV’deki iki sütundan biri doluysa
-#   • Data puanı: sadece steps JSON’unda "Data":"..." alanı gerçekten doluysa
-#   • Expected puanı: expected blokları varlığına göre (+ yazım cezası 1–5 puan)
-# - Stepler: tek blok + çok adım/edilgen ise 1 puan
-# - UI: Koyu/açık mod stil, KPI’lar, dağılım grafiği, detay kartları, örnek sayısı seçimi, CSV indirme
-# - Test Tipi Etiketi: Backend / UI (heuristic)
-# - ✅ Yeni: Key prefix (örn. QB284050, QM284050) sidebar’dan filtrelenebilir ( '-' öncesi )
+# 📌 Test Case Evaluator — v1.2.0
+# - Tablo (A/B/C/D) İHTİYAÇ analizi
+# - Key prefix filtresi ( '-' öncesi )
+# - Automated alanına göre Otomasyon/Manuel ayrımı + filtre
+# - KPI, dağılım grafiği, detay kartları, CSV indirme
 
 import streamlit as st
 import pandas as pd
@@ -102,8 +95,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 st.markdown(f"""
 <div class="app-hero">
   <h1>📋 Test Case Kalite Değerlendirmesi</h1>
-  <p>
-  <span style="opacity:0.8">Rapor zamanı: {datetime.now().strftime('%d.%m.%Y %H:%M')}</span></p>
+  <p><span style="opacity:0.8">Rapor zamanı: {datetime.now().strftime('%d.%m.%Y %H:%M')}</span></p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -166,6 +158,16 @@ def _key_prefix(val: str) -> str:
     m = re.match(r'^\s*([^\-\s]+)', v)
     return m.group(1) if m else ""
 
+# ✅ Automated alanını yorumlayan yardımcı
+def _detect_automation(val: str) -> str:
+    """CSV'deki 'Automated' alanından 'Otomasyon' / 'Manuel' üretir."""
+    v = (str(val or "")).strip().lower()
+    automated_set = {
+        "yes", "true", "1", "android-automated", "ios-automated",
+        "automated", "auto", "automation", "android_automated", "ios_automated"
+    }
+    return "Otomasyon" if v in automated_set else "Manuel"
+
 # ---- Steps JSON parse & field extract ----
 def parse_steps(steps_cell):
     """Return list of steps with normalized fields dicts, else []."""
@@ -174,7 +176,6 @@ def parse_steps(steps_cell):
     if not raw.strip():
         return steps
     txt = raw.strip()
-    # Try direct JSON
     try:
         data = json.loads(txt)
         if isinstance(data, list):
@@ -182,7 +183,6 @@ def parse_steps(steps_cell):
         else:
             steps = []
     except Exception:
-        # Try to unquote common CSV-quoted JSON ("{...}" with doubled quotes)
         try:
             if txt.startswith('"') and txt.endswith('"'):
                 txt2 = txt[1:-1].replace('""','"')
@@ -191,7 +191,6 @@ def parse_steps(steps_cell):
                     steps = data
         except Exception:
             steps = []
-    # Normalize fields
     norm = []
     for s in steps:
         fields = s.get("fields", {}) if isinstance(s, dict) else {}
@@ -276,14 +275,11 @@ def scan_precond_signals(text: str):
 def scan_data_signals_from_text(text: str):
     t = (text or "").lower()
     s = []
-    # Backend-ish
     if _match(r'\b(json|payload|body|request|response|headers|content-type)\b', t): s.append("JSON/HTTP")
     if _match(r'\b(post|put|patch|get|delete)\b', t) and _match(r'\b(/[\w\-/]+)\b', t): s.append("HTTP path")
     if _match(r'\bselect|insert|update|delete\b', t): s.append("SQL")
-    # UI-ish
     if _match(r'\b(tıklanır|buton|button|ekran|modal|form|textfield|input|dropdown|seçilir|yazılır|girilir)\b', t): s.append("UI input")
     if _match(r'\bplaceholder\b', t): s.append("Placeholder")
-    # Neutral
     if _match(r'\b(msisdn|token|iban|imei|email|username|password|user[_\\-]?id|subscriber)\b', t): s.append("ID field")
     return list(set(s))
 
@@ -538,6 +534,29 @@ if uploaded:
         if selected_prefixes:
             df = df[df['_Prefix'].isin(selected_prefixes)]
 
+    # ✅ Automated sütunu tespit et + durum sütunu üret + sidebar filtresi
+    auto_col = None
+    for c in df.columns:
+        cl = c.strip().lower()
+        if cl == "automated" or "automated" in cl:
+            auto_col = c
+            break
+    if auto_col:
+        df["_Automation"] = df[auto_col].apply(_detect_automation)
+    else:
+        df["_Automation"] = "Manuel"
+
+    auto_choice = st.sidebar.radio(
+        "🧪 Çalıştırma tipi",
+        options=["Tümü", "Sadece Otomasyon", "Sadece Manuel"],
+        index=0,
+        help="CSV'deki 'Automated' alanına göre filtreler."
+    )
+    if auto_choice == "Sadece Otomasyon":
+        df = df[df["_Automation"] == "Otomasyon"]
+    elif auto_choice == "Sadece Manuel":
+        df = df[df["_Automation"] == "Manuel"]
+
     # Örnekle
     n = min(sample_size, len(df))
     rstate = (123 + st.session_state.reroll) if fix_seed else None
@@ -563,6 +582,12 @@ if uploaded:
     with k4:
         st.markdown(f'<div class="kpi"><div class="kpi-title">Rapor Zamanı</div><div class="kpi-value">{datetime.now().strftime("%H:%M")}</div><div class="kpi-sub">Yerel saat</div></div>', unsafe_allow_html=True)
 
+    # Otomasyon/Manuel sayacı (bilgi amaçlı)
+    auto_counts_all = df["_Automation"].value_counts()
+    auto_ot = int(auto_counts_all.get("Otomasyon", 0))
+    auto_man = int(auto_counts_all.get("Manuel", 0))
+    st.caption(f"🧪 Çalıştırma tipi dağılımı (filtre sonrası kaynak veri): **Otomasyon:** {auto_ot} • **Manuel:** {auto_man}")
+
     st.markdown("### 📈 Tablo Dağılımı")
     st.bar_chart(dist)
 
@@ -572,10 +597,12 @@ if uploaded:
     results["Skor %"] = (results["Toplam Puan"] / results["Maks Puan"]).clip(0, 1) * 100
     results["Skor %"] = results["Skor %"].round(1)
 
-    # (İsteğe bağlı) Prefix kolonu görünüm için ekleyebiliriz
+    # Görünüm kolonu: Prefix + Automation
     results["Prefix"] = results["Key"].str.extract(r'^([^\-\s]+)')
+    # sample index'i df içinde geçerli olduğu için otomasyon bilgisini eşleyebiliyoruz
+    results["Automation"] = df.loc[sample.index, "_Automation"].values
 
-    show_cols = ["Prefix", "Key", "Summary", "Tablo", "Toplam Puan", "Skor %", "Açıklama", "_type"]
+    show_cols = ["Prefix", "Key", "Summary", "Tablo", "Toplam Puan", "Skor %", "Automation", "Açıklama", "_type"]
     if show_debug:
         show_cols += ["_data_needed", "_pre_needed", "_data_strong", "_data_written", "_pre_written_csv",
                       "_data_sigs", "_pre_sigs", "_exp_hits", "_exp_penalty"]
@@ -592,6 +619,7 @@ if uploaded:
             "Tablo": st.column_config.TextColumn("Tablo"),
             "Toplam Puan": st.column_config.NumberColumn("Toplam Puan", format="%d"),
             "Skor %": st.column_config.ProgressColumn("Skor %", min_value=0, max_value=100, help="Toplam puanın tablo maksimumuna oranı"),
+            "Automation": st.column_config.TextColumn("Çalıştırma Tipi", help="Otomasyon / Manuel"),
             "Açıklama": st.column_config.TextColumn("Açıklama", width="large"),
             "_type": st.column_config.TextColumn("Tip", help="Backend/UI tahmini"),
             "_data_needed": st.column_config.TextColumn("need:data"),
