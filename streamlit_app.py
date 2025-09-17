@@ -320,4 +320,9 @@ def choose_table(summary: str, action_texts: list, expected_texts: list, pre_ass
     return decision
 
 # ✏️ ---- EXPECTED YAZIM KALİTESİ CEZASI ----
-_EXPECT_PAST_WORDS = r"(oldu|olmadı|gerçekleşti|gerçekleşmedi|yapıldı|yapılmadı|edildi|edilmedi|sağlandı|sağlanmadı|tamamlandı|tamamlanmadı|görüldü|görülmedi|döndü|başarılı
+_EXPECT_PAST_WORDS = (
+    r"(oldu|olmadı|gerçekleşti|gerçekleşmedi|yapıldı|yapılmadı|edildi|edilmedi|"
+    r"sağlandı|sağlanmadı|tamamlandı|tamamlanmadı|görüldü|görülmedi|döndü|"
+    r"başarılı oldu|başarısız oldu|hata verdi|gösterildi|gösterilmedi)"
+)
+
